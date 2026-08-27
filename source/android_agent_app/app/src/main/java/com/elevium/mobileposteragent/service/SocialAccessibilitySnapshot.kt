@@ -437,6 +437,94 @@ internal object SocialAccessibilitySnapshotPolicy {
         return snapshot.visibleLabels().toSet().containsAll(setOf("Posted", "View"))
     }
 
+    fun isYouTubeOwnedChannel(snapshot: SocialAccessibilitySnapshot, expectedAccount: String): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        val expected = expectedAccount.trim().removePrefix("@").trim()
+        val labels = snapshot.visibleLabels().map { it.trim().removePrefix("@").trim() }
+        return expected.isNotBlank() && labels.contains(expected) && youtubeVideoCount(snapshot) != null
+    }
+
+    fun isYouTubeAccountTab(snapshot: SocialAccessibilitySnapshot, expectedAccount: String): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        val expected = expectedAccount.trim().removePrefix("@").trim()
+        val normalized = snapshot.visibleLabels().map { it.trim().removePrefix("@").trim() }.toSet()
+        return expected.isNotBlank() && normalized.contains(expected) && snapshot.visibleLabels().contains("View channel")
+    }
+
+    fun youtubeVideoCount(snapshot: SocialAccessibilitySnapshot): Int? {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return null
+        val regex = Regex("^(\\d+)\\s+videos?$", RegexOption.IGNORE_CASE)
+        return snapshot.visibleLabels().mapNotNull { regex.matchEntire(it.trim())?.groupValues?.get(1)?.toIntOrNull() }
+            .distinct().singleOrNull()
+    }
+
+    fun isYouTubeShortEntry(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        val labels = snapshot.visibleLabels().toSet()
+        val galleryAction = labels.contains("Add from Gallery") || labels.contains("Add")
+        return galleryAction && labels.containsAll(setOf("Short", "Video", "Live", "Post"))
+    }
+
+    fun isYouTubeGallery(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        val labels = snapshot.visibleLabels().toSet()
+        return labels.contains("Gallery") && labels.contains("Next")
+    }
+
+    fun isYouTubeTrimEditor(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        val labels = snapshot.visibleLabels().toSet()
+        return labels.contains("Done") && labels.any { it.contains("Drag to adjust video") }
+    }
+
+    fun isYouTubeShortEditor(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        return snapshot.visibleLabels().toSet().containsAll(setOf("Add sound", "Edit", "Next"))
+    }
+
+    fun isYouTubeDetails(snapshot: SocialAccessibilitySnapshot, expectedAccount: String): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        val expected = expectedAccount.trim().removePrefix("@").trim()
+        val normalized = snapshot.visibleLabels().map { it.trim().removePrefix("@").trim() }.toSet()
+        val labels = snapshot.visibleLabels().toSet()
+        val audienceControl = labels.contains("Select audience") || labels.contains("Audience")
+        return expected.isNotBlank() && normalized.contains(expected) &&
+            labels.containsAll(setOf("Add details", "Upload Short")) && audienceControl &&
+            snapshot.nodes.count { it.visible && it.editable } == 1
+    }
+
+    fun isYouTubeAudienceScreen(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        val labels = snapshot.visibleLabels().toSet()
+        return labels.contains("Select audience") && labels.contains("No, it's not made for kids")
+    }
+
+    fun isYouTubeReadyToUpload(snapshot: SocialAccessibilitySnapshot, expectedAccount: String, expectedTitle: String): Boolean {
+        if (!isYouTubeDetails(snapshot, expectedAccount)) return false
+        val editable = snapshot.nodes.filter { it.visible && it.editable }
+        val labels = snapshot.visibleLabels().toSet()
+        val audienceVerified = labels.contains("Not made for kids") || labels.any {
+            it.replace('\u2019', '\'') == "No, it's not made for kids"
+        }
+        return audienceVerified &&
+            editable.size == 1 && editable.single().text.trim() == expectedTitle.trim()
+    }
+
+    fun isYouTubePublicationReceipt(
+        snapshot: SocialAccessibilitySnapshot,
+        expectedAccount: String,
+        prePublishCount: Int,
+        preUploadFingerprint: String,
+    ): Boolean {
+        if (preUploadFingerprint.isBlank() || snapshot.fingerprint == preUploadFingerprint) return false
+        if (!isYouTubeOwnedChannel(snapshot, expectedAccount)) return false
+        val countAdvanced = (youtubeVideoCount(snapshot) ?: return false) > prePublishCount
+        val uploadAccepted = snapshot.visibleLabels().any {
+            it.trim().startsWith("Uploading", ignoreCase = true)
+        }
+        return countAdvanced || uploadAccepted
+    }
+
     fun isVerifiedInstagramDirectShareComposer(
         snapshot: SocialAccessibilitySnapshot,
         expectedCaption: String,

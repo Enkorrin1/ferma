@@ -83,6 +83,7 @@ class JobCreate(BaseModel):
         "tiktok_post",
         "tiktok_post_dry_run",
         "threads_post",
+        "youtube_short",
         "pinterest_pin",
         "pinterest_pin_verify",
         "pinterest_dry_run",

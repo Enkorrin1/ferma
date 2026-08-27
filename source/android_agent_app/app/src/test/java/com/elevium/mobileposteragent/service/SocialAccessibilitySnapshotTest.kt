@@ -212,6 +212,59 @@ class SocialAccessibilitySnapshotTest {
     }
 
     @Test
+    fun youtubeFlowRequiresExactChannelAudienceTitleAndFreshCountReceipt() {
+        val channel = snapshot(
+            nodes = listOf(node(text = "@Ivanaicreator"), node(text = "1 video", path = "root/1")),
+            packageName = "com.google.android.youtube",
+            fingerprint = "channel-before",
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubeOwnedChannel(channel, "@Ivanaicreator"))
+        assertEquals(1, SocialAccessibilitySnapshotPolicy.youtubeVideoCount(channel))
+        val details = snapshot(
+            nodes = listOf(
+                node(text = "Add details"),
+                node(text = "@Ivanaicreator", path = "root/1"),
+                node(text = "Select audience", path = "root/2"),
+                node(text = "Upload Short", path = "root/3"),
+                node(text = "Farm YouTube test", editable = true, path = "root/4"),
+                node(text = "Not made for kids", path = "root/5"),
+            ),
+            packageName = "com.google.android.youtube",
+            fingerprint = "ready",
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubeReadyToUpload(details, "Ivanaicreator", "Farm YouTube test"))
+        val selectedAudienceDetails = details.copy(nodes = details.nodes.map {
+            when (it.text) {
+                "Select audience" -> it.copy(text = "Audience")
+                "Not made for kids" -> it.copy(text = "No, it’s not made for kids")
+                else -> it
+            }
+        })
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubeReadyToUpload(
+            selectedAudienceDetails,
+            "Ivanaicreator",
+            "Farm YouTube test",
+        ))
+        val receipt = channel.copy(
+            fingerprint = "channel-after",
+            nodes = listOf(node(text = "@Ivanaicreator"), node(text = "2 videos", path = "root/1")),
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubePublicationReceipt(receipt, "Ivanaicreator", 1, "ready"))
+        assertEquals(false, SocialAccessibilitySnapshotPolicy.isYouTubePublicationReceipt(receipt, "other", 1, "ready"))
+        assertEquals(false, SocialAccessibilitySnapshotPolicy.isYouTubePublicationReceipt(receipt, "Ivanaicreator", 2, "ready"))
+        val uploadingReceipt = channel.copy(
+            fingerprint = "channel-uploading",
+            nodes = channel.nodes + node(text = "Uploading · 54%", path = "root/2"),
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubePublicationReceipt(
+            uploadingReceipt,
+            "Ivanaicreator",
+            1,
+            "ready",
+        ))
+    }
+
+    @Test
     fun accountAndMediaAreEvaluatedFromTheSameImmutableSnapshot() {
         val media = "/storage/emulated/0/Pictures/MobilePosterAgent/current.png"
         val immutable = snapshot(listOf(

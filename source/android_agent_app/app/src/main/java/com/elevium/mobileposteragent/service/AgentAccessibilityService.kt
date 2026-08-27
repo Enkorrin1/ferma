@@ -123,11 +123,16 @@ class AgentAccessibilityService : AccessibilityService() {
         clearTerminalSocialProof()
         clearPinterestBoardSelectionProof()
         publishDeadlineAt = SystemClock.uptimeMillis() +
-            if (SocialDryRunPolicy.automationTarget(job.target) != null) SOCIAL_PUBLISH_TIMEOUT_MS else PUBLISH_TIMEOUT_MS
+            if (SocialDryRunPolicy.automationTarget(job.target) != null || job.target == "youtube_short") {
+                SOCIAL_PUBLISH_TIMEOUT_MS
+            } else {
+                PUBLISH_TIMEOUT_MS
+            }
         step("publish:${job.target}")
         val result = when (job.target) {
             "instagram_reel", "tiktok_post", "instagram_reel_dry_run", "tiktok_post_dry_run" -> publishSocialFlow(job)
             "threads_post" -> publishThreads(job)
+            "youtube_short" -> publishYouTubeShort(job)
         "pinterest_pin" -> if (verifyExistingPinterestPin(job)) true else publishPinterest(job, preparedMedia)
         "pinterest_pin_verify" -> if (verifyExistingPinterestPin(job)) {
             true
@@ -1148,6 +1153,101 @@ class AgentAccessibilityService : AccessibilityService() {
         return true
     }
 
+    private fun publishYouTubeShort(job: PublishJob): Boolean {
+        val expectedAccount = job.platformAccountLabel?.trim()?.removePrefix("@").orEmpty()
+        if (expectedAccount.isBlank()) return needsReview("YouTube requires the exact visible channel identity; Upload Short was not pressed")
+        moveAwayFromAgentUiIfNeeded()
+        if (!launchPackageAndWait("com.google.android.youtube", "YouTube")) return false
+        var landing = acquireStableSocialAccessibilitySnapshot()
+        if (SocialAccessibilitySnapshotPolicy.isYouTubeShortEntry(landing)) {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+            landing = acquireStableSocialAccessibilitySnapshot()
+        }
+        if (!SocialAccessibilitySnapshotPolicy.isYouTubeOwnedChannel(landing, expectedAccount) &&
+            !SocialAccessibilitySnapshotPolicy.isYouTubeAccountTab(landing, expectedAccount)
+        ) {
+            if (!tapScreen(YOUTUBE_PROFILE_CENTER_X, YOUTUBE_PROFILE_CENTER_Y)) {
+                return needsReview("YouTube exact You tab was not actionable; Upload Short was not pressed")
+            }
+            landing = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+                SocialAccessibilitySnapshotPolicy.isYouTubeAccountTab(it, expectedAccount) ||
+                    SocialAccessibilitySnapshotPolicy.isYouTubeOwnedChannel(it, expectedAccount)
+            } ?: return needsReview("YouTube exact account/channel surface was not verifiable; Upload Short was not pressed")
+        }
+        val channel = if (SocialAccessibilitySnapshotPolicy.isYouTubeOwnedChannel(landing, expectedAccount)) {
+            landing
+        } else {
+            if (!clickExactVisibleText("View channel")) {
+                return needsReview("YouTube exact View channel action was not uniquely actionable; Upload Short was not pressed")
+            }
+            waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+                SocialAccessibilitySnapshotPolicy.isYouTubeOwnedChannel(it, expectedAccount)
+            } ?: return needsReview("YouTube exact logged-in channel was not verifiable; Upload Short was not pressed")
+        }
+        val prePublishCount = SocialAccessibilitySnapshotPolicy.youtubeVideoCount(channel)
+            ?: return needsReview("YouTube channel video count was unavailable; Upload Short was not pressed")
+        if (!tapScreen(YOUTUBE_CREATE_CENTER_X, YOUTUBE_CREATE_CENTER_Y)) {
+            return needsReview("YouTube exact Create control was not actionable; Upload Short was not pressed")
+        }
+        waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isYouTubeShortEntry(it)
+        } ?: return needsReview("YouTube Short entry was not verifiable; Upload Short was not pressed")
+        if (!tapScreen(YOUTUBE_GALLERY_CENTER_X, YOUTUBE_GALLERY_CENTER_Y)) {
+            return needsReview("YouTube Add from Gallery was not actionable; Upload Short was not pressed")
+        }
+        waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isYouTubeGallery(it)
+        } ?: return needsReview("YouTube exact Gallery was not verifiable; Upload Short was not pressed")
+        val displayName = preparedMediaName.orEmpty()
+        val extension = displayName.substringAfterLast('.', "").lowercase()
+        val exactNewest = if (extension in setOf("mp4", "mov", "webm", "mkv", "3gp")) {
+            isExactVideoNewestInMediaStore(displayName)
+        } else {
+            isExactImageNewestInMediaStore(displayName)
+        }
+        if (!exactNewest || !tapScreen(YOUTUBE_NEWEST_MEDIA_CENTER_X, YOUTUBE_NEWEST_MEDIA_CENTER_Y)) {
+            return needsReview("YouTube exact current-job media selection was not proven; Upload Short was not pressed")
+        }
+        SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+        if (!clickExactVisibleText("Next")) return needsReview("YouTube Gallery Next was not uniquely actionable; Upload Short was not pressed")
+        waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isYouTubeTrimEditor(it)
+        } ?: return needsReview("YouTube exact trim editor was not verifiable; Upload Short was not pressed")
+        if (!clickExactVisibleText("Done")) return needsReview("YouTube trim Done was not uniquely actionable; Upload Short was not pressed")
+        waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isYouTubeShortEditor(it)
+        } ?: return needsReview("YouTube exact Short editor was not verifiable; Upload Short was not pressed")
+        if (!clickExactVisibleText("Next")) return needsReview("YouTube Short editor Next was not uniquely actionable; Upload Short was not pressed")
+        waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isYouTubeDetails(it, expectedAccount)
+        } ?: return needsReview("YouTube Add details screen/account was not verifiable; Upload Short was not pressed")
+        if (job.caption.isNotBlank() && !setUniqueVisibleEditableText(job.caption)) {
+            return needsReview("YouTube title could not be set exactly; Upload Short was not pressed")
+        }
+        if (!clickExactVisibleText("Select audience")) return needsReview("YouTube audience control was not uniquely actionable; Upload Short was not pressed")
+        waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isYouTubeAudienceScreen(it)
+        } ?: return needsReview("YouTube COPPA audience screen was not verifiable; Upload Short was not pressed")
+        if (!clickExactVisibleText("No, it's not made for kids")) {
+            return needsReview("YouTube exact not-made-for-kids option was not actionable; Upload Short was not pressed")
+        }
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        val ready = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isYouTubeReadyToUpload(it, expectedAccount, job.caption)
+        } ?: return needsReview("YouTube title/account/audience readback was not verifiable; Upload Short was not pressed")
+        if (!clickExactVisibleText("Upload Short")) return needsReview("YouTube exact final Upload Short was not actionable")
+        val receipt = waitForTikTokSnapshot(YOUTUBE_RECEIPT_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isYouTubePublicationReceipt(it, expectedAccount, prePublishCount, ready.fingerprint)
+        } ?: return needsReview("YouTube Upload Short was pressed, but a fresh channel receipt was unavailable")
+        if (!SocialAccessibilitySnapshotPolicy.isYouTubePublicationReceipt(receipt, expectedAccount, prePublishCount, ready.fingerprint)) {
+            return needsReview("YouTube fresh publication receipt changed after upload")
+        }
+        verifiedPublicationId = "youtube:${job.jobId}"
+        step("social:youtube:publication-receipt")
+        return true
+    }
+
     private fun publishTikTok(job: PublishJob): Boolean {
         moveAwayFromAgentUiIfNeeded()
         if (!launchPackageAndWait("com.zhiliaoapp.musically", "TikTok")) return false
@@ -1435,6 +1535,12 @@ private fun launchPackageFromLauncher(appLabel: String): Boolean {
         performGlobalAction(GLOBAL_ACTION_HOME)
         SystemClock.sleep(700)
         dismissSystemInterferenceIfPresent()
+    if (appLabel == "YouTube" && clickExactText(listOf("Google"), retries = 1)) {
+        SystemClock.sleep(650)
+        if (clickExactText(listOf("YouTube"), retries = 2)) return true
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        SystemClock.sleep(350)
+    }
     repeat(4) { page ->
         if (clickExactText(listOf(appLabel, "Pinterest", "Пинтерест"), retries = 1)) return true
         if (page < 3) {
@@ -3769,6 +3875,15 @@ private fun launchPackageFromLauncher(appLabel: String): Boolean {
         private const val THREADS_POST_CENTER_X = 635f
         private const val THREADS_POST_CENTER_Y = 1_358f
         private const val THREADS_RECEIPT_TIMEOUT_MS = 30_000L
+        private const val YOUTUBE_PROFILE_CENTER_X = 648f
+        private const val YOUTUBE_PROFILE_CENTER_Y = 1_370f
+        private const val YOUTUBE_CREATE_CENTER_X = 360f
+        private const val YOUTUBE_CREATE_CENTER_Y = 1_370f
+        private const val YOUTUBE_GALLERY_CENTER_X = 72f
+        private const val YOUTUBE_GALLERY_CENTER_Y = 1_180f
+        private const val YOUTUBE_NEWEST_MEDIA_CENTER_X = 120f
+        private const val YOUTUBE_NEWEST_MEDIA_CENTER_Y = 360f
+        private const val YOUTUBE_RECEIPT_TIMEOUT_MS = 120_000L
         private const val PINTEREST_BOARD_PENDING_TIMEOUT_MS = 7_000L
         private const val SOCIAL_PROFILE_TREE_SETTLE_MS = 1_200L
         private const val SOCIAL_PROFILE_TREE_ATTEMPTS = 5

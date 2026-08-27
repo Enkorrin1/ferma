@@ -1520,6 +1520,43 @@ class HubFlowTest(unittest.TestCase):
         target_schema = openapi["components"]["schemas"]["JobCreate"]["properties"]["target"]
         self.assertIn("threads_post", target_schema["enum"])
 
+    def test_youtube_short_requires_verified_publication_and_persists_receipt(self):
+        created = self.create_job(
+            key="youtube-real-publication",
+            target="youtube_short",
+            caption="YouTube integration receipt",
+            media_url="https://example.com/youtube.mp4",
+            account_label="Main_Account",
+            platform_account_label="@Ivanaicreator",
+        )
+        self.assertEqual(created.status_code, 201)
+        job_id = created.json()["job_id"]
+        self.register_device()
+        job = self.claim().json()["job"]
+        self.assertEqual(job["target"], "youtube_short")
+        self.assertEqual(job["platform_account_label"], "@Ivanaicreator")
+        self.assertEqual(
+            self.client.post(
+                f"/jobs/{job_id}/status",
+                headers=self.lease_headers(job),
+                json={"status": "succeeded", "publication_id": f"youtube:{job_id}"},
+            ).status_code,
+            409,
+        )
+        verified = self.client.post(
+            f"/jobs/{job_id}/status",
+            headers=self.lease_headers(job),
+            json={
+                "status": "succeeded",
+                "publication_verified": True,
+                "publication_id": f"youtube:{job_id}",
+            },
+        )
+        self.assertEqual(verified.status_code, 200)
+        self.assertEqual(self.job_detail(job_id)["job"]["publication_id"], f"youtube:{job_id}")
+        target_schema = self.client.get("/openapi.json").json()["components"]["schemas"]["JobCreate"]["properties"]["target"]
+        self.assertIn("youtube_short", target_schema["enum"])
+
 
 class MigrationTest(unittest.TestCase):
     def test_additive_migration_preserves_legacy_job(self):

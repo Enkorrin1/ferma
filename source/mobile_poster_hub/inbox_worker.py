@@ -28,6 +28,7 @@ TARGETS = {
     "Instagram": "instagram_reel",
     "TikTok": "tiktok_post",
     "Threads": "threads_post",
+    "YouTube": "youtube_short",
 }
 MEDIA_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov"}
 

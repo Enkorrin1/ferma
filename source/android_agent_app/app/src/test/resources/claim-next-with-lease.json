@@ -1,0 +1,17 @@
+{
+  "job": {
+    "job_id": "job-contract-001",
+    "target": "pinterest_dry_run",
+    "account_label": "main_account",
+    "caption": "contract fixture",
+    "title": "Dry run",
+    "description": null,
+    "link": null,
+    "board": "QA",
+    "media_path": null,
+    "media_url": "https://example.com/image.png",
+    "lease_token": "lease-token-0123456789abcdef",
+    "lease_expires_at": "2026-08-14T22:30:00+00:00",
+    "attempt_number": 3
+  }
+}

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mobile Poster Agent</string>
+    <string name="accessibility_service_label">Mobile Poster Agent Accessibility</string>
+    <string name="accessibility_service_description">Lets the agent open apps, find buttons, and complete posting flows.</string>
+    <string name="setup_subtitle">Install once, grant permissions, and let the phone connect to your posting hub.</string>
+    <string name="hub_url_hint">Hub URL</string>
+    <string name="runner_token_hint">Runner token</string>
+    <string name="runner_token_replacement_description">Runner token replacement; saved token is not displayed</string>
+    <string name="device_label_hint">Device label</string>
+    <string name="account_label_hint">Account label</string>
+    <string name="pinterest_board_hint">Existing Pinterest board name (exact)</string>
+    <string name="save_config">Save config</string>
+    <string name="start_agent">Start agent</string>
+    <string name="allow_screen_capture">Allow screen capture</string>
+    <string name="open_accessibility_settings">Open accessibility settings</string>
+    <string name="request_notifications">Allow notifications</string>
+    <string name="status_idle">Agent is idle.</string>
+    <string name="status_saved">Config saved.</string>
+    <string name="status_service_started">Foreground service started.</string>
+    <string name="status_missing_config">Enter a valid HTTPS hub URL, token, and device label first.</string>
+    <string name="status_storage_permission_needed">Allow storage access, then tap Start agent again.</string>
+    <string name="status_screen_capture_granted">Screen capture permission granted.</string>
+    <string name="status_screen_capture_denied">Screen capture permission was not granted.</string>
+    <string name="notification_channel_name">Mobile Poster Agent</string>
+    <string name="notification_channel_description">Keeps the posting agent alive while it polls the hub.</string>
+    <string name="notification_title">Mobile Poster Agent is running</string>
+    <string name="notification_text">Watching for scheduled posting jobs.</string>
+</resources>

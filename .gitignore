@@ -1,0 +1,36 @@
+# Local runtime state and generated evidence
+artifacts/
+FarmQueue/
+apk/
+
+# Local indexing, tooling, and build caches
+.cbm-cache*/
+.cbm-private-cache/
+.cbm-private-temp/
+.cbm-temp/
+.gradle-cache/
+.gradle-tmp/
+.kotlin-daemon/
+.tools/
+**/.gradle/
+**/.tooling/
+**/.venv/
+**/build/
+**/__pycache__/
+**/.test-temp/
+
+# Secrets and machine-specific configuration
+**/.env
+**/local.properties
+**/*.keystore
+**/*.jks
+
+# Crash and replay dumps
+hs_err_pid*.log
+replay_pid*.log
+
+# IDE / OS files
+.idea/
+**/*.iml
+.DS_Store
+Thumbs.db

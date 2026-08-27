@@ -1,0 +1,33 @@
+services:
+  hub:
+    build: .
+    restart: unless-stopped
+    environment:
+      HUB_RUNNER_TOKEN: ${HUB_RUNNER_TOKEN:?set HUB_RUNNER_TOKEN in .env}
+      HUB_ADMIN_TOKEN: ${HUB_ADMIN_TOKEN:?set HUB_ADMIN_TOKEN in .env}
+      HUB_DATA_DIR: /data
+    volumes:
+      - hub_data:/data
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      - hub
+    environment:
+      HUB_DOMAIN: ${HUB_DOMAIN:?set HUB_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  hub_data:
+  caddy_data:
+  caddy_config:

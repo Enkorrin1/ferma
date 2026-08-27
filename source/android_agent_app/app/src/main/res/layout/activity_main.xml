@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:id="@+id/titleText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textAppearance="@style/TextAppearance.Material3.HeadlineMedium" />
+
+        <TextView
+            android:id="@+id/subtitleText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/setup_subtitle"
+            android:textAppearance="@style/TextAppearance.Material3.BodyMedium" />
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/hubUrlInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hub_url_hint"
+                android:inputType="textUri" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/runnerTokenInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:autofillHints="password"
+                android:contentDescription="@string/runner_token_replacement_description"
+                android:hint="@string/runner_token_hint"
+                android:importantForAutofill="noExcludeDescendants"
+                android:inputType="textPassword"
+                android:saveEnabled="false" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/deviceLabelInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/device_label_hint" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/accountLabelInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/account_label_hint" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/pinterestBoardInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/pinterest_board_hint"
+                android:inputType="textCapSentences" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <Button
+            android:id="@+id/saveConfigButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/save_config" />
+
+        <Button
+            android:id="@+id/startAgentButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/start_agent" />
+
+        <Button
+            android:id="@+id/allowScreenCaptureButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/allow_screen_capture" />
+
+        <Button
+            android:id="@+id/openAccessibilityButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/open_accessibility_settings" />
+
+        <Button
+            android:id="@+id/requestNotificationButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/request_notifications" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="Manual publication"
+            android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp">
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/manualMediaUrlInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="HTTPS media URL"
+                android:inputType="textUri" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp">
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/manualCaptionInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Caption / description"
+                android:inputType="textCapSentences|textMultiLine"
+                android:minLines="2" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp">
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/manualPlatformAccountInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Platform account, e.g. @pin.van4"
+                android:inputType="text" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <RadioGroup
+            android:id="@+id/manualPlatformGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <RadioButton android:id="@+id/platformPinterest" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" android:text="Pinterest" />
+            <RadioButton android:id="@+id/platformInstagram" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Instagram" />
+            <RadioButton android:id="@+id/platformTikTok" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="TikTok" />
+        </RadioGroup>
+
+        <Button android:id="@+id/enqueuePinterestButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Post to Pinterest" />
+        <Button android:id="@+id/enqueueInstagramButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Post to Instagram" />
+        <Button android:id="@+id/enqueueTikTokButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Post to TikTok" />
+        <Button android:id="@+id/enqueueDryRunButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Dry run (do not publish)" />
+
+        <Button
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:enabled="false"
+            android:text="YouTube — coming after executor integration" />
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/status_idle"
+            android:textAppearance="@style/TextAppearance.Material3.BodyMedium" />
+
+    </LinearLayout>
+
+</ScrollView>

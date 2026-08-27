@@ -1,0 +1,6 @@
+{
+  "evidence_id": "evidence-current-123",
+  "status": "available",
+  "screenshot_path": "/jobs/job-123/screenshots/current.png",
+  "idempotent_replay": false
+}

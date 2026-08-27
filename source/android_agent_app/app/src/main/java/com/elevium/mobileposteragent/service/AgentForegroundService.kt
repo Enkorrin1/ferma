@@ -197,6 +197,28 @@ class AgentForegroundService : LifecycleService() {
                 upload?.job?.start()
             }
         val joinedStepUploads = stepUploads.closeAndSnapshot()
+        val trace = accessibility.lastTraceSummary()
+        if (success) {
+            // A real-platform receipt is the authoritative terminal proof. Diagnostic step
+            // screenshots are best effort and must never delay or strand that terminal report:
+            // Android 9 capture/upload work can remain blocked even after the platform receipt
+            // has been observed. Close admission, cancel only unfinished diagnostics, then report
+            // the verified publication while the lease is still live.
+            joinedStepUploads.map(AdmittedStepCapture::job)
+                .filterNot(Job::isCompleted)
+                .forEach(Job::cancel)
+            stepSupervisor.cancel()
+            if (trace.isNotBlank()) {
+                api.addEvent(job, message = "Accessibility trace: $trace")
+            }
+            api.addEvent(job, message = "Accessibility publish flow finished with positive terminal proof")
+            return@coroutineScope HubContract.publicationReport(
+                target = job.target,
+                positivePublicationProof = true,
+                message = "Android agent verified external publication",
+                publicationId = accessibility.lastVerifiedPublicationId(),
+            )
+        }
         val joinedWithinBound = withTimeoutOrNull(StepCaptureJoinBudget.milliseconds(joinedStepUploads.size)) {
             joinedStepUploads.map(AdmittedStepCapture::job).joinAll()
             true
@@ -213,20 +235,6 @@ class AgentForegroundService : LifecycleService() {
             parentStillActive,
             joinedStepUploads.map { it.outcome.get() },
         )
-        val trace = accessibility.lastTraceSummary()
-        if (success) {
-            if (trace.isNotBlank()) {
-                api.addEvent(job, message = "Accessibility trace: $trace")
-            }
-            api.addEvent(job, message = "Accessibility publish flow finished with positive terminal proof")
-              return@coroutineScope HubContract.publicationReport(
-                  target = job.target,
-                  positivePublicationProof = true,
-                  message = "Android agent verified external publication",
-                  publicationId = accessibility.lastVerifiedPublicationId(),
-              )
-        }
-
         val reason = accessibility.lastErrorMessage() ?: "Accessibility publish flow failed"
         if (reason.startsWith(AgentAccessibilityService.NEEDS_REVIEW_PREFIX)) {
             val evidence = captureAndUploadFailureScreenshot(api, job)

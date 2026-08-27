@@ -301,7 +301,9 @@ internal object SocialAccessibilitySnapshotPolicy {
         val expected = expectedAccount.trim().removePrefix("@").trim()
         return expected.isNotBlank() && snapshot.nodes.count { node ->
             node.visible && node.viewId == INSTAGRAM_ACCOUNT_VIEW_ID &&
-                node.text.trim().removePrefix("@").trim() == expected
+                sequenceOf(node.text, node.description).any { label ->
+                    label.trim().removePrefix("@").trim() == expected
+                }
         } == 1
     }
 
@@ -377,6 +379,16 @@ internal object SocialAccessibilitySnapshotPolicy {
         val labels = snapshot.visibleLabels().toSet()
         return labels.containsAll(setOf("About Reels", "Share", "Cancel")) &&
             labels.any { it.startsWith("Your reel will be shared publicly") }
+    }
+
+    fun isVerifiedInstagramPublicationReceipt(
+        snapshot: SocialAccessibilitySnapshot,
+        preShareFingerprint: String,
+    ): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
+        if (preShareFingerprint.isBlank() || snapshot.fingerprint == preShareFingerprint) return false
+        val labels = snapshot.visibleLabels().toSet()
+        return labels.contains("Posted! All set.") && labels.contains("Want to send it to friends?")
     }
 
     fun isVerifiedInstagramDirectShareComposer(

@@ -133,6 +133,32 @@ class SocialAccessibilitySnapshotTest {
     }
 
     @Test
+    fun instagramPublicationReceiptRequiresExactFreshOwnedConfirmation() {
+        val receipt = snapshot(
+            listOf(
+                node(text = "Posted! All set.", path = "root/0"),
+                node(text = "Want to send it to friends?", path = "root/1"),
+            ),
+            fingerprint = "post-share",
+        )
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isVerifiedInstagramPublicationReceipt(receipt, "pre-share"),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isVerifiedInstagramPublicationReceipt(receipt, "post-share"),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isVerifiedInstagramPublicationReceipt(
+                receipt.copy(nodes = receipt.nodes.take(1)),
+                "pre-share",
+            ),
+        )
+    }
+
+    @Test
     fun accountAndMediaAreEvaluatedFromTheSameImmutableSnapshot() {
         val media = "/storage/emulated/0/Pictures/MobilePosterAgent/current.png"
         val immutable = snapshot(listOf(

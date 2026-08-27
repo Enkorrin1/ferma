@@ -299,7 +299,7 @@ class AgentAccessibilityService : AccessibilityService() {
         val accountDecision = if (
             job.target == "tiktok_post" &&
             flowDecision.snapshotDecision.screen == SocialScreenKind.UNKNOWN &&
-            (SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(snapshot) || snapshot.nodes.none { it.visible })
+            (SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(snapshot) || snapshot.visibleLabels().isEmpty())
         ) {
             step("social-tiktok-authenticated-device-account")
             SocialSnapshotDecision(
@@ -373,7 +373,7 @@ class AgentAccessibilityService : AccessibilityService() {
             val openedTikTokCreate = target.platform == SocialPlatform.TIKTOK && when {
                 SocialAccessibilitySnapshotPolicy.mayOpenTikTokCreate(actionDecision, actionSnapshot) ->
                     clickExactVisibleViewId(SocialAccessibilitySnapshotPolicy.TIKTOK_CREATE_ENTRY_VIEW_ID)
-                job.target == "tiktok_post" && actionSnapshot.nodes.none { it.visible } -> {
+                job.target == "tiktok_post" && actionSnapshot.visibleLabels().isEmpty() -> {
                     step("social-tiktok-create-calibrated-fallback")
                     tapScreen(TIKTOK_CREATE_CENTER_X, TIKTOK_CREATE_CENTER_Y)
                 }

@@ -15,8 +15,9 @@ class SocialAccessibilitySnapshotTest {
         visible: Boolean = true,
         editable: Boolean = false,
         path: String = "root/0",
+        bounds: String = "[1,1][20,20]",
     ) = SocialAccessibilityNode(
-        path, text, description, "", "android.view.View", viewId, visible, editable, "[1,1][20,20]",
+        path, text, description, "", "android.view.View", viewId, visible, editable, bounds,
     )
 
     private fun snapshot(
@@ -241,6 +242,102 @@ class SocialAccessibilitySnapshotTest {
             SocialAccessibilitySnapshotPolicy.mayOpenTikTokCreate(
                 decision.copy(screen = SocialScreenKind.UNKNOWN),
                 current,
+            ),
+        )
+    }
+
+    @Test
+    fun tiktokEmptyCaptionAcceptsCurrentPlaceholderVariantsOnlyOnExactFinalComposer() {
+        fun finalSnapshot(captionText: String, extraNodes: List<SocialAccessibilityNode> = emptyList()) = snapshot(
+            packageName = "com.zhiliaoapp.musically",
+            nodes = listOf(
+                node(
+                    text = captionText,
+                    viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_CAPTION_VIEW_ID,
+                    editable = true,
+                    path = "root/caption",
+                ),
+                node(
+                    description = "Selected image preview",
+                    viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_PHOTO_PREVIEW_VIEW_ID,
+                    path = "root/preview",
+                ),
+                node(
+                    text = "Drafts",
+                    viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_DRAFTS_VIEW_ID,
+                    bounds = SocialAccessibilitySnapshotPolicy.TIKTOK_DRAFTS_BOUNDS,
+                    path = "root/drafts",
+                ),
+                node(
+                    text = "Post",
+                    viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_POST_VIEW_ID,
+                    bounds = SocialAccessibilitySnapshotPolicy.TIKTOK_POST_BOUNDS,
+                    path = "root/post",
+                ),
+            ) + extraNodes,
+        )
+
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isVerifiedTikTokFinalComposer(
+                finalSnapshot("Add a catchy title"), "",
+            ),
+        )
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isVerifiedTikTokFinalComposer(
+                finalSnapshot("Add a catchy title\nWriting a long description can help get more views"), "",
+            ),
+        )
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isVerifiedTikTokFinalComposer(
+                finalSnapshot("Writing a long description can help get 3x more views on average."), "",
+            ),
+        )
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isVerifiedTikTokFinalComposer(
+                finalSnapshot("", listOf(node(text = "0/4000", path = "root/counter"))), "",
+            ),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isVerifiedTikTokFinalComposer(
+                finalSnapshot("A real user title"), "",
+            ),
+        )
+    }
+
+    @Test
+    fun tiktokDirectPublicationReceiptRequiresFreshOwnedFeedAndRecentPhoto() {
+        val freshReceipt = snapshot(
+            packageName = "com.zhiliaoapp.musically",
+            fingerprint = "fresh-feed",
+            nodes = listOf("Home", "Friends", "Inbox", "Profile", "Photo", "2s ago").mapIndexed { index, label ->
+                node(text = label, path = "root/$index")
+            },
+        )
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isTikTokDirectPublicationReceipt(freshReceipt, "composer"),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isTikTokDirectPublicationReceipt(
+                freshReceipt.copy(fingerprint = "composer"), "composer",
+            ),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isTikTokDirectPublicationReceipt(
+                freshReceipt.copy(nodes = freshReceipt.nodes.filterNot { it.text == "2s ago" }), "composer",
+            ),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isTikTokDirectPublicationReceipt(
+                freshReceipt.copy(nodes = freshReceipt.nodes.filterNot { it.text == "Photo" }), "composer",
             ),
         )
     }

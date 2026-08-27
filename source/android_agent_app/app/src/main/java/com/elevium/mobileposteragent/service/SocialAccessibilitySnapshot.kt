@@ -397,8 +397,30 @@ internal object SocialAccessibilitySnapshotPolicy {
             it.visible && it.editable && it.viewId == TIKTOK_CAPTION_VIEW_ID
         }.text.trim()
         val expected = expectedCaption.trim()
-        val emptyPlaceholder = actual in setOf("Add a catchy title", "Добавьте привлекательный заголовок")
+        val emptyPlaceholder = actual.startsWith("Add a catchy title") ||
+            actual.startsWith("Добавьте привлекательный заголовок") ||
+            actual.startsWith("Writing a long description can help") ||
+            actual.startsWith("Подробное описание поможет")
         val exactEmptyCounter = snapshot.visibleLabels().count { it.trim() == "0/4000" } == 1
         return if (expected.isEmpty()) actual.isEmpty() || emptyPlaceholder || exactEmptyCounter else actual == expected
+    }
+
+    fun isTikTokDirectPublicationReceipt(
+        snapshot: SocialAccessibilitySnapshot,
+        composerFingerprint: String,
+    ): Boolean {
+        if (
+            !snapshot.consistent || snapshot.packageName != "com.zhiliaoapp.musically" ||
+            composerFingerprint.isBlank() || snapshot.fingerprint == composerFingerprint
+        ) return false
+        val labels = snapshot.visibleLabels().map(String::trim)
+        val hasOwnedFeedNavigation = listOf("Home", "Friends", "Inbox", "Profile").all(labels::contains)
+        val hasPhotoMarker = labels.count { it == "Photo" || it == "Фото" } == 1
+        val hasFreshAge = labels.any { label ->
+            label == "Just now" || label == "Только что" ||
+                Regex("^(?:[0-5]?\\d)s ago$").matches(label) ||
+                Regex("^(?:[0-5]?\\d) сек.*назад$", RegexOption.IGNORE_CASE).matches(label)
+        }
+        return hasOwnedFeedNavigation && hasPhotoMarker && hasFreshAge
     }
 }

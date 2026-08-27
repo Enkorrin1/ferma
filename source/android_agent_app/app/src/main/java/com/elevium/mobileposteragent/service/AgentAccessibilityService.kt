@@ -756,31 +756,32 @@ class AgentAccessibilityService : AccessibilityService() {
         if (!clickExactVisibleText("Post")) {
             return needsReview("TikTok exact final Post action was not uniquely available")
         }
-        SystemClock.sleep(SOCIAL_PROFILE_TREE_RETRY_MS)
-        val confirmation = acquireStableSocialAccessibilitySnapshot()
-        val labels = confirmation.visibleLabels().map(String::trim)
-        val exactConfirmation = confirmation.consistent &&
-            confirmation.packageName == "com.zhiliaoapp.musically" &&
-            labels.count { it == "Post video publicly?" } == 1 &&
-            labels.count { it == "Cancel" } == 1 &&
-            labels.count { it == "Post Now" } == 1
-        if (!exactConfirmation) {
-            return needsReview("TikTok public-post confirmation was not exact; Post Now was not pressed")
-        }
-        if (!clickExactVisibleText("Post Now")) {
-            return needsReview("TikTok exact Post Now confirmation was not uniquely actionable")
-        }
+        var confirmationPressed = false
         val deadline = SystemClock.uptimeMillis() + TIKTOK_RECEIPT_TIMEOUT_MS
         while (SystemClock.uptimeMillis() < deadline) {
             SystemClock.sleep(SOCIAL_PROFILE_TREE_RETRY_MS)
             val receipt = acquireStableSocialAccessibilitySnapshot()
             if (receipt.packageName != "com.zhiliaoapp.musically") continue
             val receiptLabels = receipt.visibleLabels().map { it.trim() }
+            val exactConfirmation = receipt.consistent &&
+                receiptLabels.count { it == "Post video publicly?" } == 1 &&
+                receiptLabels.count { it == "Cancel" } == 1 &&
+                receiptLabels.count { it == "Post Now" } == 1
+            if (exactConfirmation && !confirmationPressed) {
+                if (!clickExactVisibleText("Post Now")) {
+                    return needsReview("TikTok exact Post Now confirmation was not uniquely actionable")
+                }
+                confirmationPressed = true
+                continue
+            }
             val exactReceipt = receiptLabels.any {
                 it == "Your video is being uploaded" ||
                     it == "Your video has been posted" ||
                     it == "Posted"
-            }
+            } || SocialAccessibilitySnapshotPolicy.isTikTokDirectPublicationReceipt(
+                receipt,
+                verifiedFinalSnapshot.fingerprint,
+            )
             if (exactReceipt) {
                 verifiedPublicationId = "tiktok:${job.jobId}"
                 step("social:tiktok:publication-receipt")
@@ -788,7 +789,7 @@ class AgentAccessibilityService : AccessibilityService() {
             }
         }
         return needsReview(
-            "TikTok Post Now was pressed after exact verification, but the publication receipt was not yet verifiable",
+            "TikTok Post was pressed after exact verification, but neither confirmation nor publication receipt was verifiable",
         )
     }
 

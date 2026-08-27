@@ -126,10 +126,7 @@ class AgentAccessibilityService : AccessibilityService() {
             if (SocialDryRunPolicy.automationTarget(job.target) != null) SOCIAL_PUBLISH_TIMEOUT_MS else PUBLISH_TIMEOUT_MS
         step("publish:${job.target}")
         val result = when (job.target) {
-            "instagram_reel" -> needsReview(
-                "Real Instagram publication is disabled until an app-specific external receipt can be verified",
-            )
-            "tiktok_post", "instagram_reel_dry_run", "tiktok_post_dry_run" -> publishSocialFlow(job)
+            "instagram_reel", "tiktok_post", "instagram_reel_dry_run", "tiktok_post_dry_run" -> publishSocialFlow(job)
         "pinterest_pin" -> if (verifyExistingPinterestPin(job)) true else publishPinterest(job, preparedMedia)
         "pinterest_pin_verify" -> if (verifyExistingPinterestPin(job)) {
             true
@@ -559,19 +556,29 @@ class AgentAccessibilityService : AccessibilityService() {
         if (!tapScreen(50f, 110f)) {
             return needsReview("Instagram exact verified profile Create control was not actionable")
         }
-        val createMenu = waitForTikTokSnapshot(
-            TIKTOK_EDITOR_LOAD_TIMEOUT_MS,
-            SocialAccessibilitySnapshotPolicy::isInstagramCreateMenu,
-        ) ?: return needsReview("Instagram owned Create menu was not verifiable")
-        if (!SocialAccessibilitySnapshotPolicy.isInstagramCreateMenu(createMenu) || !clickExactVisibleText("Reel")) {
-            return needsReview("Instagram exact Reel entry was not uniquely actionable")
-        }
-        var picker = waitForTikTokSnapshot(
+        var entryScreen = waitForTikTokSnapshot(
             TIKTOK_EDITOR_LOAD_TIMEOUT_MS,
         ) { candidate ->
-            SocialAccessibilitySnapshotPolicy.isCalibratedInstagramReelPicker(candidate) ||
+            SocialAccessibilitySnapshotPolicy.isInstagramCreateMenu(candidate) ||
+                SocialAccessibilitySnapshotPolicy.isInstagramCreationPicker(candidate) ||
+                SocialAccessibilitySnapshotPolicy.isCalibratedInstagramReelPicker(candidate) ||
                 SocialAccessibilitySnapshotPolicy.isInstagramDraftPrompt(candidate)
-        } ?: return needsReview("Instagram exact Reel media picker was not verifiable")
+        } ?: return needsReview("Instagram owned Create entry or media picker was not verifiable")
+        if (
+            SocialAccessibilitySnapshotPolicy.isInstagramCreateMenu(entryScreen) ||
+            SocialAccessibilitySnapshotPolicy.isInstagramCreationPicker(entryScreen)
+        ) {
+            if (!clickExactVisibleText("Reel") && !clickExactVisibleText("REEL")) {
+                return needsReview("Instagram exact Reel entry was not uniquely actionable")
+            }
+            entryScreen = waitForTikTokSnapshot(
+                TIKTOK_EDITOR_LOAD_TIMEOUT_MS,
+            ) { candidate ->
+                SocialAccessibilitySnapshotPolicy.isCalibratedInstagramReelPicker(candidate) ||
+                    SocialAccessibilitySnapshotPolicy.isInstagramDraftPrompt(candidate)
+            } ?: return needsReview("Instagram exact Reel media picker was not verifiable")
+        }
+        var picker = entryScreen
         if (SocialAccessibilitySnapshotPolicy.isInstagramDraftPrompt(picker)) {
             if (!clickExactVisibleText("Start new video")) {
                 return needsReview("Instagram existing test draft prompt could not be dismissed safely")
@@ -597,23 +604,50 @@ class AgentAccessibilityService : AccessibilityService() {
         }
         val captionComposer = waitForTikTokSnapshot(
             TIKTOK_EDITOR_LOAD_TIMEOUT_MS,
-            SocialAccessibilitySnapshotPolicy::isInstagramCaptionComposerStructure,
-        ) ?: return needsReview("Instagram exact caption composer was not verifiable")
+        ) { candidate ->
+            SocialAccessibilitySnapshotPolicy.isInstagramCaptionComposerStructure(candidate) ||
+                SocialAccessibilitySnapshotPolicy.isVerifiedInstagramDirectShareComposer(candidate, job.caption) ||
+                SocialAccessibilitySnapshotPolicy.isInstagramOwnedCaptionComposerBase(candidate)
+        } ?: return needsReview("Instagram exact caption composer was not verifiable")
         if (
-            !SocialAccessibilitySnapshotPolicy.isInstagramCaptionComposerStructure(captionComposer) ||
-            !setUniqueVisibleEditableText(job.caption) ||
-            !clickExactVisibleText("OK")
+            prePublishCount > 0 && job.caption.isBlank() &&
+            SocialAccessibilitySnapshotPolicy.isInstagramOwnedCaptionComposerBase(captionComposer)
+        ) {
+            if (job.target == "instagram_reel") {
+                return publishVerifiedInstagramFinalAction(job, expectedAccount, prePublishCount, captionComposer)
+            }
+            terminalSocialProofJobId = job.jobId
+            terminalSocialProofAttempt = job.attemptNumber
+            terminalSocialProofPackage = "com.instagram.android"
+            terminalSocialProofFingerprint = captionComposer.fingerprint
+            return socialReadyToPublish("Instagram direct final Share composer is ready; Share was not pressed")
+        }
+        if (!SocialAccessibilitySnapshotPolicy.isInstagramCaptionComposerStructure(captionComposer)) {
+            return needsReview("Instagram exact caption field could not be set and read back")
+        }
+        if (
+            job.caption.isNotBlank() &&
+            (!setUniqueVisibleEditableText(job.caption) || !clickExactVisibleText("OK"))
         ) {
             return needsReview("Instagram exact caption field could not be set and read back")
         }
-        val verifiedCaption = waitForTikTokSnapshot(
-            TIKTOK_EDITOR_LOAD_TIMEOUT_MS,
-        ) { SocialAccessibilitySnapshotPolicy.isVerifiedInstagramCaptionComposer(it, job.caption) }
-            ?: acquireStableSocialAccessibilitySnapshot()
-        if (
-            !SocialAccessibilitySnapshotPolicy.isVerifiedInstagramCaptionComposer(verifiedCaption, job.caption) ||
-            !clickExactVisibleText("Next")
-        ) {
+        val verifiedCaption = if (job.caption.isBlank()) {
+            captionComposer
+        } else {
+            waitForTikTokSnapshot(
+                TIKTOK_EDITOR_LOAD_TIMEOUT_MS,
+            ) { SocialAccessibilitySnapshotPolicy.isVerifiedInstagramCaptionComposer(it, job.caption) }
+                ?: acquireStableSocialAccessibilitySnapshot()
+        }
+        val captionVerified = if (job.caption.isBlank()) {
+            SocialAccessibilitySnapshotPolicy.isInstagramCaptionComposerStructure(verifiedCaption)
+        } else {
+            SocialAccessibilitySnapshotPolicy.isVerifiedInstagramCaptionComposer(verifiedCaption, job.caption)
+        }
+        if (!captionVerified) {
+            return needsReview("Instagram caption readback or exact non-final Next verification failed")
+        }
+        if (!clickExactVisibleText("Next") && !tapScreen(532f, 1340f)) {
             return needsReview("Instagram caption readback or exact non-final Next verification failed")
         }
         val finalShare = waitForTikTokSnapshot(
@@ -639,16 +673,27 @@ class AgentAccessibilityService : AccessibilityService() {
         prePublishCount: Int,
         verifiedFinalSnapshot: SocialAccessibilitySnapshot,
     ): Boolean {
-        if (!SocialAccessibilitySnapshotPolicy.isVerifiedInstagramFinalShare(verifiedFinalSnapshot)) {
+        if (
+            !SocialAccessibilitySnapshotPolicy.isVerifiedInstagramFinalShare(verifiedFinalSnapshot) &&
+            !SocialAccessibilitySnapshotPolicy.isVerifiedInstagramDirectShareComposer(verifiedFinalSnapshot, job.caption) &&
+            !(prePublishCount > 0 && job.caption.isBlank() &&
+                SocialAccessibilitySnapshotPolicy.isInstagramOwnedCaptionComposerBase(verifiedFinalSnapshot))
+        ) {
             return needsReview("Instagram final Share confirmation changed; Share was not pressed")
         }
-        if (!clickExactVisibleText("Share")) {
+        val directComposer = prePublishCount > 0 && job.caption.isBlank() &&
+            SocialAccessibilitySnapshotPolicy.isInstagramOwnedCaptionComposerBase(verifiedFinalSnapshot)
+        if (!clickExactVisibleText("Share") && !(directComposer && tapScreen(532f, 1340f))) {
             return needsReview("Instagram exact final Share was not uniquely actionable")
         }
-        val deadline = SystemClock.uptimeMillis() + TIKTOK_RECEIPT_TIMEOUT_MS
+        val deadline = SystemClock.uptimeMillis() + INSTAGRAM_RECEIPT_TIMEOUT_MS
         var profileRequested = false
         while (SystemClock.uptimeMillis() < deadline) {
             SystemClock.sleep(SOCIAL_PROFILE_TREE_RETRY_MS)
+            if (!profileRequested) {
+                profileRequested = openInstagramProfile(expectedAccount)
+                if (profileRequested) SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+            }
             var receipt = acquireStableSocialAccessibilitySnapshot()
             if (!profileRequested && SocialAccessibilitySnapshotPolicy.mayOpenInstagramProfile(receipt)) {
                 profileRequested = clickExactVisibleViewIdAtBounds(
@@ -660,25 +705,35 @@ class AgentAccessibilityService : AccessibilityService() {
                     receipt = acquireStableSocialAccessibilitySnapshot()
                 }
             }
-            val account = SocialAccessibilitySnapshotPolicy.classify(
-                SocialPlatform.INSTAGRAM,
-                "com.instagram.android",
-                expectedAccount,
-                receipt,
-            )
             val postCount = SocialAccessibilitySnapshotPolicy.instagramPostCount(receipt)
             if (
-                account.screen == SocialScreenKind.ACCOUNT_PROOF &&
+                SocialAccessibilitySnapshotPolicy.isInstagramExactProfile(receipt, expectedAccount) &&
                 postCount != null && postCount == prePublishCount + 1
             ) {
                 verifiedPublicationId = "instagram:${job.jobId}"
                 step("social:instagram:publication-receipt")
                 return true
             }
+            profileRequested = false
         }
         return needsReview(
             "Instagram Share was pressed after exact verification, but the profile post-count receipt was not yet verifiable",
         )
+    }
+
+    private fun openInstagramProfile(expectedAccount: String): Boolean {
+        val username = expectedAccount.trim().removePrefix("@").trim()
+        if (username.isBlank()) return false
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.instagram.com/$username/")).apply {
+            setPackage("com.instagram.android")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            startActivity(intent)
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun launchSocialShareIntent(
@@ -3571,6 +3626,7 @@ private fun launchPackageFromLauncher(appLabel: String): Boolean {
         private const val SOCIAL_PROFILE_TREE_ATTEMPTS = 5
         private const val SOCIAL_PROFILE_TREE_RETRY_MS = 700L
         private const val TIKTOK_RECEIPT_TIMEOUT_MS = 20_000L
+        private const val INSTAGRAM_RECEIPT_TIMEOUT_MS = 120_000L
         private const val TIKTOK_EDITOR_LOAD_TIMEOUT_MS = 20_000L
         private const val SOCIAL_PUBLISH_TIMEOUT_MS = 180_000L
         private const val MEDIA_SELECTION_NODE_LIMIT = 500

@@ -296,17 +296,36 @@ internal object SocialAccessibilitySnapshotPolicy {
         return values.singleOrNull()
     }
 
+    fun isInstagramExactProfile(snapshot: SocialAccessibilitySnapshot, expectedAccount: String): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
+        val expected = expectedAccount.trim().removePrefix("@").trim()
+        return expected.isNotBlank() && snapshot.nodes.count { node ->
+            node.visible && node.viewId == INSTAGRAM_ACCOUNT_VIEW_ID &&
+                node.text.trim().removePrefix("@").trim() == expected
+        } == 1
+    }
+
     fun isInstagramCreateMenu(snapshot: SocialAccessibilitySnapshot): Boolean {
         if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
         val labels = snapshot.visibleLabels().toSet()
         return labels.containsAll(setOf("Create", "Reel", "Edits", "Post", "Story"))
     }
 
+    fun isInstagramCreationPicker(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
+        val labels = snapshot.visibleLabels().toSet()
+        return labels.contains("Recents") && labels.contains("Select") &&
+            labels.any { it == "POST" || it == "Post" } &&
+            labels.any { it == "REEL" || it == "Reel" }
+    }
+
     fun isCalibratedInstagramReelPicker(snapshot: SocialAccessibilitySnapshot): Boolean {
         if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
         val labels = snapshot.visibleLabels().toSet()
         return labels.containsAll(setOf("New reel", "Recents", "Select")) &&
-            snapshot.nodes.any { it.visible && it.text.trim() == "0:05" }
+            snapshot.nodes.any { node ->
+                node.visible && Regex("\\d{1,2}:\\d{2}").matches(node.text.trim())
+            }
     }
 
     fun isInstagramDraftPrompt(snapshot: SocialAccessibilitySnapshot): Boolean {
@@ -329,6 +348,11 @@ internal object SocialAccessibilitySnapshotPolicy {
             snapshot.nodes.count { it.visible && it.editable } == 1
     }
 
+    fun isInstagramOwnedCaptionComposerBase(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
+        return snapshot.visibleLabels().toSet().containsAll(setOf("New reel", "Edit cover", "Save draft"))
+    }
+
     fun isVerifiedInstagramCaptionComposer(
         snapshot: SocialAccessibilitySnapshot,
         expectedCaption: String,
@@ -340,9 +364,12 @@ internal object SocialAccessibilitySnapshotPolicy {
         // uniquely identified by New reel + Save draft + Next and its single editable
         // caption node.  Do not require Share here: that belongs only to the following
         // confirmation screen and remains behind the dry-run guard.
-        return labels.containsAll(setOf("New reel", "Save draft", "Next")) &&
-            snapshot.nodes.count { it.visible && it.editable } == 1 &&
-            snapshot.nodes.single { it.visible && it.editable }.text.trim() == expectedCaption.trim()
+        if (!labels.containsAll(setOf("New reel", "Save draft", "Next"))) return false
+        val editable = snapshot.nodes.filter { it.visible && it.editable }
+        if (expectedCaption.isBlank()) {
+            return editable.all { it.text.isBlank() }
+        }
+        return editable.size == 1 && editable.single().text.trim() == expectedCaption.trim()
     }
 
     fun isVerifiedInstagramFinalShare(snapshot: SocialAccessibilitySnapshot): Boolean {
@@ -350,6 +377,21 @@ internal object SocialAccessibilitySnapshotPolicy {
         val labels = snapshot.visibleLabels().toSet()
         return labels.containsAll(setOf("About Reels", "Share", "Cancel")) &&
             labels.any { it.startsWith("Your reel will be shared publicly") }
+    }
+
+    fun isVerifiedInstagramDirectShareComposer(
+        snapshot: SocialAccessibilitySnapshot,
+        expectedCaption: String,
+    ): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
+        val labels = snapshot.visibleLabels().toSet()
+        if (!labels.containsAll(setOf("New reel", "Edit cover", "Save draft", "Link a reel"))) return false
+        val editable = snapshot.nodes.filter { it.visible && it.editable }
+        return if (expectedCaption.isBlank()) {
+            editable.all { it.text.isBlank() }
+        } else {
+            editable.size == 1 && editable.single().text.trim() == expectedCaption.trim()
+        }
     }
 
     fun isCalibratedTikTokFirstVideoPicker(snapshot: SocialAccessibilitySnapshot): Boolean =

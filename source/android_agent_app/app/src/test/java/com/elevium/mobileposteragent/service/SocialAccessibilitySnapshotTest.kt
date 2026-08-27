@@ -385,4 +385,67 @@ class SocialAccessibilitySnapshotTest {
             ),
         )
     }
+    @Test
+    fun instagramCreationPickerAcceptsCurrentPostToReelSwitcher() {
+        val picker = snapshot(
+            listOf(
+                node(text = "New post", path = "root/0"),
+                node(text = "Recents", path = "root/1"),
+                node(text = "Select", path = "root/2"),
+                node(text = "POST", path = "root/3"),
+                node(text = "STORY", path = "root/4"),
+                node(text = "REEL", path = "root/5"),
+            ),
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isInstagramCreationPicker(picker))
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isInstagramCreationPicker(
+                picker.copy(nodes = picker.nodes.filterNot { it.text == "REEL" }),
+            ),
+        )
+    }
+
+    @Test
+    fun instagramReelPickerAcceptsArbitraryVideoDurationButNotMissingMedia() {
+        val picker = snapshot(
+            listOf(
+                node(text = "New reel", path = "root/0"),
+                node(text = "Recents", path = "root/1"),
+                node(text = "Select", path = "root/2"),
+                node(text = "0:37", path = "root/3"),
+            ),
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isCalibratedInstagramReelPicker(picker))
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isCalibratedInstagramReelPicker(
+                picker.copy(nodes = picker.nodes.filterNot { it.text == "0:37" }),
+            ),
+        )
+    }
+
+    @Test
+    fun instagramBlankCaptionReadbackAcceptsOwnedUnfocusedComposerHint() {
+        val composer = snapshot(
+            listOf(
+                node(text = "New reel", path = "root/0"),
+                node(text = "Write a caption and add hashtags…", path = "root/1"),
+                node(text = "Edit cover", path = "root/1a"),
+                node(text = "Save draft", path = "root/2"),
+                node(text = "Next", path = "root/3"),
+            ),
+        )
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isVerifiedInstagramCaptionComposer(composer, ""),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isVerifiedInstagramCaptionComposer(
+                composer.copy(nodes = composer.nodes + node(text = "unexpected", editable = true, path = "root/9")),
+                "",
+            ),
+        )
+    }
 }

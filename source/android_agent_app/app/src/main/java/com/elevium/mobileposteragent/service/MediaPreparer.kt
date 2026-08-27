@@ -131,7 +131,28 @@ object MediaPreparer {
             context,
             arrayOf(file.absolutePath),
             arrayOf(mimeType),
-        ) { _, _ -> scanFinished.countDown() }
+        ) { _, scannedUri ->
+            if (scannedUri != null) {
+                val nowSeconds = System.currentTimeMillis() / 1_000L
+                runCatching {
+                    context.contentResolver.update(
+                        scannedUri,
+                        ContentValues().apply {
+                            put(MediaStore.MediaColumns.DATE_ADDED, nowSeconds)
+                            put(MediaStore.MediaColumns.DATE_MODIFIED, nowSeconds)
+                            if (mimeType.startsWith("video/", ignoreCase = true)) {
+                                // TikTok's Android 9 Recents index primarily follows capture
+                                // time, not insertion time, for generated MP4 files.
+                                put(MediaStore.Video.VideoColumns.DATE_TAKEN, System.currentTimeMillis())
+                            }
+                        },
+                        null,
+                        null,
+                    )
+                }
+            }
+            scanFinished.countDown()
+        }
         if (!scanFinished.await(MEDIA_SCAN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
             throw IOException("MediaStore scan timed out")
         }
@@ -253,7 +274,15 @@ object MediaPreparer {
     }
 
     private fun mediaDirectory(mediaKind: MediaKind): String {
-        return if (mediaKind.isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES
+        // TikTok's Android 9 picker maintains its own Recents index and can keep newly scanned
+        // files from Movies behind stale camera media.  Import job-owned videos into the camera
+        // collection so the exact freshly scanned item participates in the picker's primary
+        // recency ordering. Images retain their established Pictures path for Pinterest.
+        return if (mediaKind.isVideo) {
+            "${Environment.DIRECTORY_DCIM}/Camera"
+        } else {
+            Environment.DIRECTORY_PICTURES
+        }
     }
 
     private const val MAX_DOWNLOAD_ATTEMPTS = 3

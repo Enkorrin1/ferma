@@ -310,7 +310,7 @@ class SocialAccessibilitySnapshotTest {
     }
 
     @Test
-    fun tiktokDirectPublicationReceiptRequiresFreshOwnedFeedAndRecentPhoto() {
+    fun tiktokDirectPublicationReceiptRequiresFreshOwnedFeedForPhotoOrVideo() {
         val freshReceipt = snapshot(
             packageName = "com.zhiliaoapp.musically",
             fingerprint = "fresh-feed",
@@ -335,7 +335,7 @@ class SocialAccessibilitySnapshotTest {
             ),
         )
         assertEquals(
-            false,
+            true,
             SocialAccessibilitySnapshotPolicy.isTikTokDirectPublicationReceipt(
                 freshReceipt.copy(nodes = freshReceipt.nodes.filterNot { it.text == "Photo" }), "composer",
             ),
@@ -355,6 +355,15 @@ class SocialAccessibilitySnapshotTest {
             ),
         )
         assertEquals(true, SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(shell))
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.hasTikTokOwnedNavigation(shell))
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.hasTikTokOwnedNavigation(
+                shell.copy(nodes = shell.nodes.filterNot {
+                    it.viewId == SocialAccessibilitySnapshotPolicy.TIKTOK_CREATE_ENTRY_VIEW_ID
+                }),
+            ),
+        )
         assertEquals(
             false,
             SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(shell.copy(nodes = emptyList())),

@@ -99,6 +99,8 @@ internal object SocialAccessibilitySnapshotPolicy {
     const val TIKTOK_PROFILE_ENTRY_VIEW_ID = "com.zhiliaoapp.musically:id/ofe"
     const val TIKTOK_PROFILE_ENTRY_BOUNDS = "[576,1326][720,1424]"
     const val TIKTOK_MEDIA_PAGER_VIEW_ID = "com.zhiliaoapp.musically:id/viewpager_choose_media"
+    const val TIKTOK_MEDIA_PICKER_CLOSE_VIEW_ID = "com.zhiliaoapp.musically:id/bqo"
+    const val TIKTOK_MEDIA_PICKER_CLOSE_BOUNDS = "[16,63][96,143]"
     const val TIKTOK_MEDIA_TILE_VIEW_ID = "com.zhiliaoapp.musically:id/ooy"
     const val TIKTOK_FIRST_MEDIA_TILE_BOUNDS = "[243,245][478,483]"
     const val TIKTOK_MEDIA_NEXT_VIEW_ID = "com.zhiliaoapp.musically:id/pt2"
@@ -398,7 +400,9 @@ internal object SocialAccessibilitySnapshotPolicy {
         }.text.trim()
         val expected = expectedCaption.trim()
         val emptyPlaceholder = actual.startsWith("Add a catchy title") ||
+            actual.startsWith("Add description") ||
             actual.startsWith("Добавьте привлекательный заголовок") ||
+            actual.startsWith("Добавьте описание") ||
             actual.startsWith("Writing a long description can help") ||
             actual.startsWith("Подробное описание поможет")
         val exactEmptyCounter = snapshot.visibleLabels().count { it.trim() == "0/4000" } == 1
@@ -415,13 +419,15 @@ internal object SocialAccessibilitySnapshotPolicy {
         ) return false
         val labels = snapshot.visibleLabels().map(String::trim)
         val hasOwnedFeedNavigation = listOf("Home", "Friends", "Inbox", "Profile").all(labels::contains)
-        val hasPhotoMarker = labels.count { it == "Photo" || it == "Фото" } == 1
         val hasFreshAge = labels.any { label ->
             label == "Just now" || label == "Только что" ||
                 Regex("^(?:[0-5]?\\d)s ago$").matches(label) ||
                 Regex("^(?:[0-5]?\\d) сек.*назад$", RegexOption.IGNORE_CASE).matches(label)
         }
-        return hasOwnedFeedNavigation && hasPhotoMarker && hasFreshAge
+        // Photo posts expose an explicit Photo marker; ordinary videos do not. This predicate is
+        // evaluated only after the exact final Post control was verified and pressed, so a fresh
+        // owned feed with a changed fingerprint is the platform receipt for either media kind.
+        return hasOwnedFeedNavigation && hasFreshAge
     }
 
     /**
@@ -432,11 +438,16 @@ internal object SocialAccessibilitySnapshotPolicy {
      */
     fun isTikTokAuthenticatedShell(snapshot: SocialAccessibilitySnapshot): Boolean {
         if (!snapshot.consistent || snapshot.packageName != "com.zhiliaoapp.musically") return false
-        val labels = snapshot.visibleLabels().map(String::trim)
-        return listOf("Home", "Friends", "Inbox", "Profile").all(labels::contains) &&
+        return hasTikTokOwnedNavigation(snapshot) &&
             snapshot.nodes.count { node ->
                 node.visible && node.viewId == TIKTOK_CREATE_ENTRY_VIEW_ID &&
                     (node.description.trim() == "Create" || node.description.trim() == "Создать")
             } == 1
+    }
+
+    fun hasTikTokOwnedNavigation(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.zhiliaoapp.musically") return false
+        val labels = snapshot.visibleLabels().map(String::trim)
+        return listOf("Home", "Friends", "Inbox", "Profile").all(labels::contains)
     }
 }

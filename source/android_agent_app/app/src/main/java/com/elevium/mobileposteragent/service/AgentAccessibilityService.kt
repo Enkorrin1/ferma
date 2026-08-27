@@ -230,6 +230,7 @@ class AgentAccessibilityService : AccessibilityService() {
                 candidate.consistent && candidate.nodes.isNotEmpty() &&
                     (
                         SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(candidate) ||
+                            SocialAccessibilitySnapshotPolicy.hasTikTokOwnedNavigation(candidate) ||
                             SocialAccessibilitySnapshotPolicy.classify(
                                 SocialPlatform.TIKTOK,
                                 target.packageName,
@@ -238,6 +239,38 @@ class AgentAccessibilityService : AccessibilityService() {
                             ).screen != SocialScreenKind.UNKNOWN
                     )
             } ?: snapshot
+        }
+        // Resume from a clean TikTok shell. Interrupted runs may leave either the final
+        // composer or the non-final editor open; the calibrated Create coordinate overlaps the
+        // final Post button on those screens. Back out through those non-terminal editors first
+        // so a new job can never mistake Post/Next for the Home Create control.
+        if (target.platform == SocialPlatform.TIKTOK) {
+            repeat(2) {
+                val staleEditor = SocialAccessibilitySnapshotPolicy.isTikTokFinalComposerStructure(snapshot) ||
+                    SocialAccessibilitySnapshotPolicy.isVerifiedTikTokVideoEditor(snapshot)
+                if (!staleEditor) return@repeat
+                if (!performGlobalAction(GLOBAL_ACTION_BACK)) return@repeat
+                step("social-tiktok-stale-editor-backed-out")
+                SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+                snapshot = acquireStableSocialAccessibilitySnapshot()
+            }
+        }
+        // A previous interrupted attempt can leave TikTok's media picker in the foreground.
+        // Close that exact picker before starting this job so reopening Create forces TikTok to
+        // refresh its MediaStore-backed Recents list and expose the newly prepared job media.
+        if (
+            target.platform == SocialPlatform.TIKTOK &&
+            SocialAccessibilitySnapshotPolicy.isCalibratedTikTokFirstVideoPicker(snapshot) &&
+            clickExactVisibleViewIdAtBounds(
+                SocialAccessibilitySnapshotPolicy.TIKTOK_MEDIA_PICKER_CLOSE_VIEW_ID,
+                SocialAccessibilitySnapshotPolicy.TIKTOK_MEDIA_PICKER_CLOSE_BOUNDS,
+            )
+        ) {
+            step("social-tiktok-stale-picker-closed")
+            snapshot = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) { candidate ->
+                SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(candidate) ||
+                    SocialAccessibilitySnapshotPolicy.hasTikTokOwnedNavigation(candidate)
+            } ?: acquireStableSocialAccessibilitySnapshot()
         }
         if (
             target.platform == SocialPlatform.TIKTOK &&
@@ -298,8 +331,7 @@ class AgentAccessibilityService : AccessibilityService() {
         }
         val accountDecision = if (
             job.target == "tiktok_post" &&
-            flowDecision.snapshotDecision.screen == SocialScreenKind.UNKNOWN &&
-            (SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(snapshot) || snapshot.visibleLabels().isEmpty())
+            flowDecision.snapshotDecision.screen == SocialScreenKind.UNKNOWN
         ) {
             step("social-tiktok-authenticated-device-account")
             SocialSnapshotDecision(
@@ -334,6 +366,7 @@ class AgentAccessibilityService : AccessibilityService() {
             val exactShareUri = preparedMediaShareUri
             if (
                 target.platform == SocialPlatform.TIKTOK &&
+                job.target != "tiktok_post" &&
                 preparedMediaName?.endsWith(".mp4", ignoreCase = true) == true &&
                 exactShareUri != null &&
                 launchSocialShareIntent(
@@ -373,15 +406,17 @@ class AgentAccessibilityService : AccessibilityService() {
             val openedTikTokCreate = target.platform == SocialPlatform.TIKTOK && when {
                 SocialAccessibilitySnapshotPolicy.mayOpenTikTokCreate(actionDecision, actionSnapshot) ->
                     clickExactVisibleViewId(SocialAccessibilitySnapshotPolicy.TIKTOK_CREATE_ENTRY_VIEW_ID)
-                job.target == "tiktok_post" && actionSnapshot.visibleLabels().isEmpty() -> {
+                job.target == "tiktok_post" && actionDecision.screen == SocialScreenKind.UNKNOWN -> {
                     step("social-tiktok-create-calibrated-fallback")
                     tapScreen(TIKTOK_CREATE_CENTER_X, TIKTOK_CREATE_CENTER_Y)
                 }
                 else -> false
             }
             if (openedTikTokCreate) {
-                SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
-                val createSnapshot = acquireStableSocialAccessibilitySnapshot()
+                val createSnapshot = waitForTikTokSnapshot(
+                    TIKTOK_EDITOR_LOAD_TIMEOUT_MS,
+                    SocialAccessibilitySnapshotPolicy::isCalibratedTikTokFirstVideoPicker,
+                ) ?: acquireStableSocialAccessibilitySnapshot()
                 val preparedName = preparedMediaName.orEmpty()
                 val exactNewestMedia = if (preparedName.endsWith(".mp4", ignoreCase = true)) {
                     isExactVideoNewestInMediaStore(preparedName)
@@ -893,7 +928,9 @@ class AgentAccessibilityService : AccessibilityService() {
                 if (!cursor.moveToFirst()) return@use false
                 val name = cursor.getString(0)
                 val durationMs = cursor.getLong(1)
-                name == expectedDisplayName && durationMs in 4_000L..6_000L
+                // Identity and recency bind this row to the current job. Duration must only be
+                // valid/nonzero: real queue videos are not limited to the old 5-second fixture.
+                name == expectedDisplayName && durationMs > 0L
             } ?: false
         } catch (_: Exception) {
             false

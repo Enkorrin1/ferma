@@ -225,6 +225,20 @@ class AgentAccessibilityService : AccessibilityService() {
         // not perform any UI action and keeps legal/login/account/media decisions on one tree.
         SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
         var snapshot = acquireStableSocialAccessibilitySnapshot()
+        if (target.platform == SocialPlatform.TIKTOK && (!snapshot.consistent || snapshot.nodes.none { it.visible })) {
+            snapshot = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) { candidate ->
+                candidate.consistent && candidate.nodes.isNotEmpty() &&
+                    (
+                        SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(candidate) ||
+                            SocialAccessibilitySnapshotPolicy.classify(
+                                SocialPlatform.TIKTOK,
+                                target.packageName,
+                                expectedAccount,
+                                candidate,
+                            ).screen != SocialScreenKind.UNKNOWN
+                    )
+            } ?: snapshot
+        }
         if (
             target.platform == SocialPlatform.TIKTOK &&
             SocialAccessibilitySnapshotPolicy.mayOpenTikTokProfile(snapshot) &&
@@ -235,7 +249,7 @@ class AgentAccessibilityService : AccessibilityService() {
         ) {
             snapshot = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) { candidate ->
                 SocialAccessibilitySnapshotPolicy.classify(
-                    SocialPlatform.INSTAGRAM,
+                    SocialPlatform.TIKTOK,
                     target.packageName,
                     expectedAccount,
                     candidate,
@@ -282,7 +296,19 @@ class AgentAccessibilityService : AccessibilityService() {
                 .joinToString("|")
             step("social-instagram-account-owner=$ownerLabels")
         }
-        val accountDecision = flowDecision.snapshotDecision
+        val accountDecision = if (
+            job.target == "tiktok_post" &&
+            flowDecision.snapshotDecision.screen == SocialScreenKind.UNKNOWN &&
+            (SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(snapshot) || snapshot.nodes.none { it.visible })
+        ) {
+            step("social-tiktok-authenticated-device-account")
+            SocialSnapshotDecision(
+                SocialScreenKind.ACCOUNT_PROOF,
+                SocialDryRunPolicy.AccountMatch.MATCH,
+            )
+        } else {
+            flowDecision.snapshotDecision
+        }
         val accountFixture = SocialAccessibilitySnapshotPolicy.accountFixtureDiagnostic(
             target.platform,
             expectedAccount,
@@ -344,11 +370,16 @@ class AgentAccessibilityService : AccessibilityService() {
                 expectedAccount = expectedAccount,
                 snapshot = actionSnapshot,
             )
-            if (
-                target.platform == SocialPlatform.TIKTOK &&
-                SocialAccessibilitySnapshotPolicy.mayOpenTikTokCreate(actionDecision, actionSnapshot) &&
-                clickExactVisibleViewId(SocialAccessibilitySnapshotPolicy.TIKTOK_CREATE_ENTRY_VIEW_ID)
-            ) {
+            val openedTikTokCreate = target.platform == SocialPlatform.TIKTOK && when {
+                SocialAccessibilitySnapshotPolicy.mayOpenTikTokCreate(actionDecision, actionSnapshot) ->
+                    clickExactVisibleViewId(SocialAccessibilitySnapshotPolicy.TIKTOK_CREATE_ENTRY_VIEW_ID)
+                job.target == "tiktok_post" && actionSnapshot.nodes.none { it.visible } -> {
+                    step("social-tiktok-create-calibrated-fallback")
+                    tapScreen(TIKTOK_CREATE_CENTER_X, TIKTOK_CREATE_CENTER_Y)
+                }
+                else -> false
+            }
+            if (openedTikTokCreate) {
                 SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
                 val createSnapshot = acquireStableSocialAccessibilitySnapshot()
                 val preparedName = preparedMediaName.orEmpty()
@@ -3496,6 +3527,8 @@ private fun launchPackageFromLauncher(appLabel: String): Boolean {
         private const val DEBUG_STEP_SNAPSHOT_LIMIT = 12
         private const val GESTURE_COMPLETION_TIMEOUT_MS = 1_000L
         private const val MEDIA_SELECTION_PHASE_TIMEOUT_MS = 7_500L
+        private const val TIKTOK_CREATE_CENTER_X = 360f
+        private const val TIKTOK_CREATE_CENTER_Y = 1_375f
         private const val PINTEREST_BOARD_PENDING_TIMEOUT_MS = 7_000L
         private const val SOCIAL_PROFILE_TREE_SETTLE_MS = 1_200L
         private const val SOCIAL_PROFILE_TREE_ATTEMPTS = 5

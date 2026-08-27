@@ -341,4 +341,39 @@ class SocialAccessibilitySnapshotTest {
             ),
         )
     }
+
+    @Test
+    fun tiktokAuthenticatedShellAllowsHiddenProfileHandleButRequiresExactOwnedNavigation() {
+        val shell = snapshot(
+            packageName = "com.zhiliaoapp.musically",
+            nodes = listOf("Home", "Friends", "Inbox", "Profile").mapIndexed { index, label ->
+                node(text = label, path = "root/nav/$index")
+            } + node(
+                description = "Create",
+                viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_CREATE_ENTRY_VIEW_ID,
+                path = "root/create",
+            ),
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(shell))
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(shell.copy(nodes = emptyList())),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(
+                shell.copy(nodes = shell.nodes.filterNot { it.text == "Profile" }),
+            ),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isTikTokAuthenticatedShell(
+                shell.copy(nodes = shell.nodes.map { node ->
+                    if (node.viewId == SocialAccessibilitySnapshotPolicy.TIKTOK_CREATE_ENTRY_VIEW_ID) {
+                        node.copy(description = "Add friends")
+                    } else node
+                }),
+            ),
+        )
+    }
 }

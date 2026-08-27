@@ -423,4 +423,20 @@ internal object SocialAccessibilitySnapshotPolicy {
         }
         return hasOwnedFeedNavigation && hasPhotoMarker && hasFreshAge
     }
+
+    /**
+     * A logged-in TikTok shell is sufficient for a real post routed to this dedicated device.
+     * TikTok does not expose the profile handle on Home/Friends, so requiring it on every job
+     * incorrectly blocks an already authenticated device. Legal/login precedence is still
+     * evaluated by [classify] before this fallback is considered by the service.
+     */
+    fun isTikTokAuthenticatedShell(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.zhiliaoapp.musically") return false
+        val labels = snapshot.visibleLabels().map(String::trim)
+        return listOf("Home", "Friends", "Inbox", "Profile").all(labels::contains) &&
+            snapshot.nodes.count { node ->
+                node.visible && node.viewId == TIKTOK_CREATE_ENTRY_VIEW_ID &&
+                    (node.description.trim() == "Create" || node.description.trim() == "Создать")
+            } == 1
+    }
 }

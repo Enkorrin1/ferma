@@ -1469,6 +1469,57 @@ class HubFlowTest(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 409)
 
+    def test_threads_post_requires_verified_publication_and_persists_receipt(self):
+        created = self.create_job(
+            key="threads-real-publication",
+            target="threads_post",
+            caption="Threads integration receipt",
+            media_url="https://example.com/threads.png",
+            account_label="Main_Account",
+            platform_account_label="@pinv786",
+        )
+        self.assertEqual(created.status_code, 201)
+        job_id = created.json()["job_id"]
+        self.register_device()
+        claimed = self.claim()
+        self.assertEqual(claimed.status_code, 200)
+        job = claimed.json()["job"]
+        self.assertEqual(job["job_id"], job_id)
+        self.assertEqual(job["target"], "threads_post")
+        self.assertEqual(job["platform_account_label"], "@pinv786")
+
+        running = self.client.post(
+            f"/jobs/{job_id}/status",
+            headers=self.lease_headers(job),
+            json={"status": "running"},
+        )
+        self.assertEqual(running.status_code, 200)
+        unverified = self.client.post(
+            f"/jobs/{job_id}/status",
+            headers=self.lease_headers(job),
+            json={"status": "succeeded", "publication_id": f"threads:{job_id}"},
+        )
+        self.assertEqual(unverified.status_code, 409)
+
+        verified = self.client.post(
+            f"/jobs/{job_id}/status",
+            headers=self.lease_headers(job),
+            json={
+                "status": "succeeded",
+                "publication_verified": True,
+                "publication_id": f"threads:{job_id}",
+            },
+        )
+        self.assertEqual(verified.status_code, 200)
+        self.assertEqual(verified.json()["status"], "succeeded")
+        persisted = self.job_detail(job_id)["job"]
+        self.assertEqual(persisted["status"], "succeeded")
+        self.assertEqual(persisted["publication_id"], f"threads:{job_id}")
+
+        openapi = self.client.get("/openapi.json").json()
+        target_schema = openapi["components"]["schemas"]["JobCreate"]["properties"]["target"]
+        self.assertIn("threads_post", target_schema["enum"])
+
 
 class MigrationTest(unittest.TestCase):
     def test_additive_migration_preserves_legacy_job(self):

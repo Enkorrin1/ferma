@@ -127,6 +127,7 @@ class AgentAccessibilityService : AccessibilityService() {
         step("publish:${job.target}")
         val result = when (job.target) {
             "instagram_reel", "tiktok_post", "instagram_reel_dry_run", "tiktok_post_dry_run" -> publishSocialFlow(job)
+            "threads_post" -> publishThreads(job)
         "pinterest_pin" -> if (verifyExistingPinterestPin(job)) true else publishPinterest(job, preparedMedia)
         "pinterest_pin_verify" -> if (verifyExistingPinterestPin(job)) {
             true
@@ -1082,6 +1083,69 @@ class AgentAccessibilityService : AccessibilityService() {
         } catch (_: Exception) {
             false
         }
+    }
+
+    private fun publishThreads(job: PublishJob): Boolean {
+        val expectedAccount = job.platformAccountLabel?.trim()?.removePrefix("@")?.trim().orEmpty()
+        if (expectedAccount.isBlank()) {
+            return needsReview("Threads requires the exact visible account identity; Post was not pressed")
+        }
+        moveAwayFromAgentUiIfNeeded()
+        if (!launchPackageAndWait("com.instagram.barcelona", "Threads")) return false
+        SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+        var home = acquireStableSocialAccessibilitySnapshot()
+        if (SocialAccessibilitySnapshotPolicy.isThreadsInstagramStoryPrompt(home)) {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+            home = acquireStableSocialAccessibilitySnapshot()
+        }
+        if (!SocialAccessibilitySnapshotPolicy.isThreadsOwnedHome(home, expectedAccount)) {
+            return needsReview("Threads exact logged-in account home was not verifiable; Post was not pressed")
+        }
+        if (!tapScreen(THREADS_CREATE_CENTER_X, THREADS_CREATE_CENTER_Y)) {
+            return needsReview("Threads owned Create control was not actionable; Post was not pressed")
+        }
+        val composer = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isThreadsComposer(it, expectedAccount)
+        } ?: return needsReview("Threads exact New thread composer was not verifiable; Post was not pressed")
+        if (job.caption.isNotBlank() && !setUniqueVisibleEditableText(job.caption)) {
+            return needsReview("Threads caption field could not be set exactly; Post was not pressed")
+        }
+        if (!tapScreen(THREADS_MEDIA_CENTER_X, THREADS_MEDIA_CENTER_Y)) {
+            return needsReview("Threads exact media control was not actionable; Post was not pressed")
+        }
+        val gallery = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isThreadsGallery(it)
+        } ?: return needsReview("Threads exact Gallery was not verifiable; Post was not pressed")
+        val displayName = preparedMediaName.orEmpty()
+        val extension = displayName.substringAfterLast('.', "").lowercase()
+        val exactNewest = if (extension in setOf("mp4", "mov", "webm", "mkv", "3gp")) {
+            isExactVideoNewestInMediaStore(displayName)
+        } else {
+            isExactImageNewestInMediaStore(displayName)
+        }
+        if (!exactNewest || !tapScreen(THREADS_NEWEST_MEDIA_CENTER_X, THREADS_NEWEST_MEDIA_CENTER_Y)) {
+            return needsReview("Threads exact current-job media selection was not proven; Post was not pressed")
+        }
+        SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+        if (!clickExactVisibleText("Done")) {
+            return needsReview("Threads exact Gallery Done was not uniquely actionable; Post was not pressed")
+        }
+        val ready = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isThreadsReadyComposer(it, expectedAccount, job.caption)
+        } ?: return needsReview("Threads media/caption readback was not verifiable; Post was not pressed")
+        if (!tapScreen(THREADS_POST_CENTER_X, THREADS_POST_CENTER_Y)) {
+            return needsReview("Threads exact final Post was not actionable")
+        }
+        val receipt = waitForTikTokSnapshot(THREADS_RECEIPT_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(it, ready.fingerprint)
+        } ?: return needsReview("Threads Post was pressed after exact verification, but its fresh receipt was unavailable")
+        if (!SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(receipt, ready.fingerprint)) {
+            return needsReview("Threads fresh publication receipt changed after Post")
+        }
+        verifiedPublicationId = "threads:${job.jobId}"
+        step("social:threads:publication-receipt")
+        return true
     }
 
     private fun publishTikTok(job: PublishJob): Boolean {
@@ -3696,6 +3760,15 @@ private fun launchPackageFromLauncher(appLabel: String): Boolean {
         private const val TIKTOK_CREATE_CENTER_Y = 1_375f
         private const val INSTAGRAM_PROFILE_CENTER_X = 648f
         private const val INSTAGRAM_PROFILE_CENTER_Y = 1_380f
+        private const val THREADS_CREATE_CENTER_X = 360f
+        private const val THREADS_CREATE_CENTER_Y = 1_368f
+        private const val THREADS_MEDIA_CENTER_X = 138f
+        private const val THREADS_MEDIA_CENTER_Y = 340f
+        private const val THREADS_NEWEST_MEDIA_CENTER_X = 360f
+        private const val THREADS_NEWEST_MEDIA_CENTER_Y = 350f
+        private const val THREADS_POST_CENTER_X = 635f
+        private const val THREADS_POST_CENTER_Y = 1_358f
+        private const val THREADS_RECEIPT_TIMEOUT_MS = 30_000L
         private const val PINTEREST_BOARD_PENDING_TIMEOUT_MS = 7_000L
         private const val SOCIAL_PROFILE_TREE_SETTLE_MS = 1_200L
         private const val SOCIAL_PROFILE_TREE_ATTEMPTS = 5

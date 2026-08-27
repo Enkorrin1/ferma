@@ -159,6 +159,59 @@ class SocialAccessibilitySnapshotTest {
     }
 
     @Test
+    fun threadsFlowRequiresOwnedAccountExactComposerAndFreshReceipt() {
+        val home = snapshot(
+            listOf(node(text = "pinv786"), node(text = "What's new?", path = "root/1")),
+            packageName = "com.instagram.barcelona",
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isThreadsOwnedHome(home, "@pinv786"))
+        val composer = home.copy(
+            fingerprint = "composer",
+            nodes = home.nodes + listOf(
+                node(text = "New thread", path = "root/2"),
+                node(text = "caption", editable = true, path = "root/3"),
+                node(text = "Post", path = "root/4"),
+                node(text = "Post options", path = "root/5"),
+                node(text = "Add to thread", path = "root/6"),
+            ),
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isThreadsComposer(composer, "pinv786"))
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isThreadsReadyComposer(composer, "pinv786", "caption"),
+        )
+        val receipt = snapshot(
+            listOf(node(text = "Posted"), node(text = "View", path = "root/1")),
+            packageName = "com.instagram.barcelona",
+            fingerprint = "receipt",
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(receipt, "composer"))
+        assertEquals(false, SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(receipt, "receipt"))
+    }
+
+    @Test
+    fun threadsInstagramStoryPromptRequiresExactOwnedOverlayLabels() {
+        val prompt = snapshot(
+            nodes = listOf(
+                node(text = "Add this to your Instagram story"),
+                node(text = "Try it", path = "root/1"),
+            ),
+            packageName = "com.instagram.barcelona",
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isThreadsInstagramStoryPrompt(prompt))
+        assertEquals(false,
+            SocialAccessibilitySnapshotPolicy.isThreadsInstagramStoryPrompt(
+                prompt.copy(nodes = prompt.nodes.filterNot { it.text == "Try it" })
+            )
+        )
+        assertEquals(false,
+            SocialAccessibilitySnapshotPolicy.isThreadsInstagramStoryPrompt(
+                prompt.copy(packageName = "com.instagram.android")
+            )
+        )
+    }
+
+    @Test
     fun accountAndMediaAreEvaluatedFromTheSameImmutableSnapshot() {
         val media = "/storage/emulated/0/Pictures/MobilePosterAgent/current.png"
         val immutable = snapshot(listOf(

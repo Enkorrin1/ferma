@@ -5,6 +5,7 @@ Drop media into one of these folders:
 - `inbox/Pinterest/Incoming`
 - `inbox/Instagram/Incoming`
 - `inbox/TikTok/Incoming`
+- `inbox/Threads/Incoming`
 
 An optional sidecar text file with the same base name supplies the caption, for
 example `video.mp4` and `video.txt`. Successfully queued files move to

@@ -27,6 +27,7 @@ TARGETS = {
     "Pinterest": "pinterest_pin",
     "Instagram": "instagram_reel",
     "TikTok": "tiktok_post",
+    "Threads": "threads_post",
 }
 MEDIA_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov"}
 

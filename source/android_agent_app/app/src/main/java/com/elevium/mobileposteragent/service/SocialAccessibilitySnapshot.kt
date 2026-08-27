@@ -391,6 +391,52 @@ internal object SocialAccessibilitySnapshotPolicy {
         return labels.contains("Posted! All set.") && labels.contains("Want to send it to friends?")
     }
 
+    fun isThreadsOwnedHome(snapshot: SocialAccessibilitySnapshot, expectedAccount: String): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.barcelona") return false
+        val expected = expectedAccount.trim().removePrefix("@").trim()
+        val labels = snapshot.visibleLabels().toSet()
+        return expected.isNotBlank() && labels.contains(expected) && labels.contains("What's new?")
+    }
+
+    fun isThreadsInstagramStoryPrompt(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.barcelona") return false
+        val labels = snapshot.visibleLabels()
+        return labels.contains("Add this to your Instagram story") &&
+            labels.contains("Try it")
+    }
+
+    fun isThreadsComposer(snapshot: SocialAccessibilitySnapshot, expectedAccount: String): Boolean {
+        if (!isThreadsOwnedHome(snapshot, expectedAccount)) return false
+        return snapshot.visibleLabels().contains("New thread") &&
+            snapshot.nodes.count { it.visible && it.editable } == 1
+    }
+
+    fun isThreadsGallery(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.barcelona") return false
+        return snapshot.visibleLabels().toSet().containsAll(setOf("Gallery", "Done", "Recents"))
+    }
+
+    fun isThreadsReadyComposer(
+        snapshot: SocialAccessibilitySnapshot,
+        expectedAccount: String,
+        expectedCaption: String,
+    ): Boolean {
+        if (!isThreadsComposer(snapshot, expectedAccount)) return false
+        val labels = snapshot.visibleLabels().toSet()
+        if (!labels.containsAll(setOf("Post", "Post options", "Add to thread"))) return false
+        val editable = snapshot.nodes.filter { it.visible && it.editable }
+        return editable.size == 1 && editable.single().text.trim() == expectedCaption.trim()
+    }
+
+    fun isThreadsPublicationReceipt(
+        snapshot: SocialAccessibilitySnapshot,
+        prePostFingerprint: String,
+    ): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.barcelona") return false
+        if (prePostFingerprint.isBlank() || snapshot.fingerprint == prePostFingerprint) return false
+        return snapshot.visibleLabels().toSet().containsAll(setOf("Posted", "View"))
+    }
+
     fun isVerifiedInstagramDirectShareComposer(
         snapshot: SocialAccessibilitySnapshot,
         expectedCaption: String,

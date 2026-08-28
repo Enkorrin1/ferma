@@ -14,8 +14,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Security, status
-from fastapi.responses import FileResponse
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -26,6 +26,7 @@ SCREENSHOTS_DIR = DATA_DIR / "screenshots"
 QUEUE_MEDIA_DIR = Path(os.environ.get("FARM_QUEUE_MEDIA_DIR", DATA_DIR / "queue-media")).resolve()
 RUNNER_TOKEN = os.environ.get("HUB_RUNNER_TOKEN", "")
 ADMIN_TOKEN = os.environ.get("HUB_ADMIN_TOKEN", "")
+DASHBOARD_PATH = Path(__file__).with_name("dashboard.html")
 MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
 LEASE_SECONDS = int(os.environ.get("HUB_LEASE_SECONDS", "900"))
 RETRY_BASE_SECONDS = int(os.environ.get("HUB_RETRY_BASE_SECONDS", "30"))
@@ -65,6 +66,10 @@ class DeviceRegistration(BaseModel):
     account_label: str | None = Field(default=None, max_length=120)
     notes: str | None = Field(default=None, max_length=2000)
     tags: list[str] = Field(default_factory=list, max_length=30)
+
+
+class DashboardLogin(BaseModel):
+    token: str = Field(min_length=1, max_length=500)
 
 
 DRY_RUN_TARGETS = frozenset({
@@ -474,6 +479,108 @@ def reconcile_jobs(db: sqlite3.Connection, timestamp: str) -> dict[str, int]:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+def dashboard_cookie_value() -> str:
+    return hmac.new(
+        ADMIN_TOKEN.encode("utf-8"),
+        b"mobile-poster-dashboard-session-v1",
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def dashboard_auth(
+    dashboard_session: Annotated[str | None, Cookie(alias="hub_dashboard_session")] = None,
+) -> None:
+    if not ADMIN_TOKEN or not dashboard_session or not hmac.compare_digest(
+        dashboard_session, dashboard_cookie_value()
+    ):
+        raise HTTPException(status_code=401, detail="Dashboard login is required")
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard() -> HTMLResponse:
+    if not DASHBOARD_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Dashboard asset is missing")
+    return HTMLResponse(DASHBOARD_PATH.read_text(encoding="utf-8"))
+
+
+@app.post("/dashboard/session")
+def dashboard_login(login: DashboardLogin, response: Response) -> dict:
+    if not ADMIN_TOKEN or not hmac.compare_digest(login.token, ADMIN_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+    response.set_cookie(
+        key="hub_dashboard_session",
+        value=dashboard_cookie_value(),
+        httponly=True,
+        samesite="strict",
+        secure=False,
+        max_age=12 * 60 * 60,
+        path="/",
+    )
+    return {"authenticated": True}
+
+
+@app.post("/dashboard/local-session")
+def dashboard_local_login(request: Request, response: Response) -> dict:
+    hostname = request.headers.get("host", "").split(":", 1)[0].lower()
+    if not ADMIN_TOKEN or hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise HTTPException(status_code=403, detail="Local dashboard login is unavailable")
+    response.set_cookie(
+        key="hub_dashboard_session",
+        value=dashboard_cookie_value(),
+        httponly=True,
+        samesite="strict",
+        secure=False,
+        max_age=12 * 60 * 60,
+        path="/",
+    )
+    return {"authenticated": True, "local": True}
+
+
+@app.delete("/dashboard/session")
+def dashboard_logout(response: Response) -> dict:
+    response.delete_cookie("hub_dashboard_session", path="/")
+    return {"authenticated": False}
+
+
+@app.get("/dashboard/activity", dependencies=[Depends(dashboard_auth)])
+def dashboard_activity() -> dict:
+    with database(write=False) as db:
+        jobs = db.execute(
+            """SELECT job_id,target,status,attempt_count,max_attempts,status_message,
+                      created_at,updated_at,completed_at,publication_id
+                 FROM jobs ORDER BY created_at DESC LIMIT 150"""
+        ).fetchall()
+        events = db.execute(
+            """SELECT e.event_id,e.job_id,e.created_at,e.level,e.message,e.attempt_number,
+                      e.screenshot_path,j.target,j.status
+                 FROM events e JOIN jobs j ON j.job_id=e.job_id
+                ORDER BY e.event_id DESC LIMIT 300"""
+        ).fetchall()
+        status_counts = {
+            row["status"]: row["count"]
+            for row in db.execute(
+                "SELECT status,COUNT(*) AS count FROM jobs GROUP BY status"
+            ).fetchall()
+        }
+        devices = db.execute(
+            """SELECT device_id,label,automation_state,last_seen_at
+                 FROM devices ORDER BY last_seen_at DESC"""
+        ).fetchall()
+    return {
+        "generated_at": now(),
+        "status_counts": status_counts,
+        "devices": [dict(row) for row in devices],
+        "jobs": [dict(row) for row in jobs],
+        "events": [
+            {
+                **{key: row[key] for key in row.keys() if key != "screenshot_path"},
+                "has_screenshot": bool(row["screenshot_path"]),
+            }
+            for row in events
+        ],
+    }
 
 
 @app.post("/devices/register", dependencies=[Depends(runner_auth)])

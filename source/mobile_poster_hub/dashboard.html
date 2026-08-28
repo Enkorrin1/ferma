@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ferma · Журнал</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0c0d0f;--surface:#14161a;--surface2:#1b1e23;--line:#2b2f36;--text:#f4f5f7;--muted:#969da8;--accent:#89e4b4;--info:#7cb7ff;--warn:#ffc66d;--danger:#ff8585;--ok:#79dea8;--radius:14px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-size:14px}button,input,select{font:inherit}.shell{max-width:1440px;margin:auto;padding:24px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}.brand{display:flex;align-items:center;gap:12px}.mark{width:34px;height:34px;border-radius:10px;background:var(--accent);color:#08130e;display:grid;place-items:center;font-weight:900}.brand h1{font-size:18px;margin:0}.brand p{margin:2px 0 0;color:var(--muted);font-size:12px}.status{display:flex;align-items:center;gap:8px;color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px #79dea820}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}.control{background:var(--surface);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:10px 12px;min-height:40px}.search{flex:1;min-width:220px}.btn{cursor:pointer}.btn:hover,.control:focus{border-color:#59616d;outline:none}.metrics{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:10px;margin-bottom:18px}.metric{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px}.metric b{display:block;font-size:24px;margin-top:7px}.metric span{color:var(--muted);font-size:12px}.layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px}.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}.panel-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}.panel-head h2{font-size:14px;margin:0}.panel-head span{font-size:12px;color:var(--muted)}.feed{max-height:calc(100vh - 250px);overflow:auto}.event{display:grid;grid-template-columns:92px 112px 118px minmax(180px,1fr);gap:12px;padding:11px 16px;border-bottom:1px solid #22262c;align-items:start}.event:hover{background:var(--surface2)}.time,.sub{color:var(--muted);font-size:12px}.platform{font-weight:650}.message{line-height:1.42;overflow-wrap:anywhere}.badge{display:inline-flex;align-items:center;width:max-content;border-radius:999px;padding:3px 8px;font-size:11px;font-weight:700;background:#2a2f36;color:#cbd1d9}.badge.succeeded,.badge.ready_to_publish{background:#173a2a;color:var(--ok)}.badge.running,.badge.claimed{background:#17314a;color:var(--info)}.badge.retry_wait,.badge.needs_review{background:#493618;color:var(--warn)}.badge.dead_letter,.badge.failed{background:#481f24;color:var(--danger)}.jobs{max-height:calc(100vh - 250px);overflow:auto}.job{padding:13px 15px;border-bottom:1px solid #22262c}.job-top{display:flex;justify-content:space-between;gap:8px}.job-id{font-family:ui-monospace,monospace;color:var(--muted);font-size:11px;margin-top:7px}.job-msg{font-size:12px;color:#c2c7ce;margin-top:8px;line-height:1.4}.attempt{font-size:11px;color:var(--muted);margin-top:7px}.empty,.loading{padding:36px;text-align:center;color:var(--muted)}.error{border-color:#6a2d35;color:#ffb0b0}.login{position:fixed;inset:0;background:#090a0ccc;backdrop-filter:blur(12px);display:grid;place-items:center;padding:20px;z-index:10}.login-card{width:min(420px,100%);background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:24px;box-shadow:0 24px 80px #0008}.login-card h2{margin:0 0 8px}.login-card p{color:var(--muted);line-height:1.5;margin:0 0 18px}.login-card input{width:100%;margin-bottom:10px}.login-card button{width:100%;background:var(--accent);color:#07140d;border:0;font-weight:800}.hidden{display:none}.footer{color:var(--muted);font-size:11px;margin-top:12px;text-align:right}
+    @media(max-width:900px){.shell{padding:14px}.metrics{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}.feed,.jobs{max-height:560px}.event{grid-template-columns:74px 100px 1fr}.event .platform{display:none}.top{align-items:flex-start}.status{font-size:12px}}
+    @media(max-width:520px){.metrics{grid-template-columns:repeat(2,1fr)}.metric:last-child{grid-column:span 2}.event{grid-template-columns:70px 1fr}.event .badge{grid-column:2}.toolbar>*{width:100%}}
+    @media(prefers-reduced-motion:no-preference){.dot{animation:pulse 2s infinite}@keyframes pulse{50%{box-shadow:0 0 0 7px #79dea808}}}
+  </style>
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="loginForm" class="login-card">
+      <h2>Вход в журнал Hub</h2>
+      <p>Введите admin-токен. Он передаётся один раз и не сохраняется в URL или localStorage.</p>
+      <input id="token" class="control" type="password" autocomplete="current-password" placeholder="Admin token" required>
+      <button class="control btn" type="submit">Войти</button>
+      <div id="loginError" class="footer"></div>
+    </form>
+  </div>
+  <main class="shell">
+    <header class="top">
+      <div class="brand"><div class="mark">F</div><div><h1>Ferma Hub</h1><p>Живой журнал публикаций</p></div></div>
+      <div class="status"><span class="dot"></span><span id="updated">Hub online</span></div>
+    </header>
+    <section class="toolbar" aria-label="Фильтры">
+      <input id="search" class="control search" type="search" placeholder="Поиск по событиям и ID">
+      <select id="platform" class="control"><option value="">Все платформы</option></select>
+      <select id="level" class="control"><option value="">Все уровни</option><option>info</option><option>warning</option><option>error</option></select>
+      <button id="refresh" class="control btn" type="button">Обновить</button>
+      <button id="logout" class="control btn" type="button">Выйти</button>
+    </section>
+    <section id="metrics" class="metrics" aria-label="Сводка"></section>
+    <section class="layout">
+      <article class="panel"><div class="panel-head"><h2>Лента действий</h2><span id="eventCount"></span></div><div id="events" class="feed"><div class="loading">Загрузка…</div></div></article>
+      <aside class="panel"><div class="panel-head"><h2>Задания</h2><span id="device"></span></div><div id="jobs" class="jobs"><div class="loading">Загрузка…</div></div></aside>
+    </section>
+    <div class="footer">Автообновление каждые 3 секунды · секреты и payload скрыты</div>
+  </main>
+  <script>
+    const $=s=>document.querySelector(s);let state={events:[],jobs:[]},timer;
+    const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const time=v=>{const d=new Date(v);return Number.isNaN(d.valueOf())?'':d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',second:'2-digit'})};
+    const platformName=v=>({pinterest_pin:'Pinterest',tiktok_post:'TikTok',instagram_reel:'Instagram',threads_post:'Threads',youtube_short:'YouTube'}[v]||v);
+    async function load(){try{let r=await fetch('/dashboard/activity',{cache:'no-store'});if(r.status===401&&['127.0.0.1','localhost','::1'].includes(location.hostname)){const local=await fetch('/dashboard/local-session',{method:'POST'});if(local.ok)r=await fetch('/dashboard/activity',{cache:'no-store'})}if(r.status===401){showLogin();return}if(!r.ok)throw Error('HTTP '+r.status);state=await r.json();hideLogin();render();$('#updated').textContent='Обновлено '+time(state.generated_at)}catch(e){$('#events').innerHTML='<div class="empty error">Не удалось получить журнал: '+esc(e.message)+'</div>'}}
+    function render(){const counts=state.status_counts||{};const total=state.jobs.length;const active=(counts.running||0)+(counts.claimed||0)+(counts.pending||0)+(counts.retry_wait||0);const review=(counts.needs_review||0)+(counts.dead_letter||0);const succeeded=counts.succeeded||0;$('#metrics').innerHTML=[[total,'Всего заданий'],[active,'В работе / очереди'],[succeeded,'Опубликовано'],[review,'Требуют внимания'],[state.events.length,'Событий загружено']].map(x=>`<div class="metric"><span>${x[1]}</span><b>${x[0]}</b></div>`).join('');const values=[...new Set(state.jobs.map(j=>j.target))].sort();const current=$('#platform').value;$('#platform').innerHTML='<option value="">Все платформы</option>'+values.map(v=>`<option value="${esc(v)}">${esc(platformName(v))}</option>`).join('');$('#platform').value=current;renderEvents();renderJobs();const d=state.devices[0];$('#device').textContent=d?`${d.label} · ${time(d.last_seen_at)}`:'Нет устройств'}
+    function renderEvents(){const q=$('#search').value.toLowerCase(),p=$('#platform').value,l=$('#level').value;const rows=state.events.filter(e=>(!p||e.target===p)&&(!l||e.level===l)&&(!q||`${e.message} ${e.job_id} ${e.target}`.toLowerCase().includes(q)));$('#eventCount').textContent=rows.length;$('#events').innerHTML=rows.length?rows.map(e=>`<div class="event"><div class="time">${time(e.created_at)}<div class="sub">#${e.event_id}</div></div><div class="platform">${esc(platformName(e.target))}<div class="sub">attempt ${e.attempt_number}</div></div><span class="badge ${esc(e.status)}">${esc(e.status)}</span><div class="message">${esc(e.message)}<div class="sub">${esc(e.job_id.slice(0,8))}${e.has_screenshot?' · screenshot':''}</div></div></div>`).join(''):'<div class="empty">Нет событий по этому фильтру</div>'}
+    function renderJobs(){const p=$('#platform').value,q=$('#search').value.toLowerCase();const rows=state.jobs.filter(j=>(!p||j.target===p)&&(!q||`${j.job_id} ${j.target} ${j.status} ${j.status_message||''}`.toLowerCase().includes(q)));$('#jobs').innerHTML=rows.length?rows.map(j=>`<div class="job"><div class="job-top"><strong>${esc(platformName(j.target))}</strong><span class="badge ${esc(j.status)}">${esc(j.status)}</span></div><div class="attempt">Попытка ${j.attempt_count}/${j.max_attempts} · ${time(j.updated_at)}</div><div class="job-id">${esc(j.job_id)}</div>${j.status_message?`<div class="job-msg">${esc(j.status_message)}</div>`:''}</div>`).join(''):'<div class="empty">Заданий нет</div>'}
+    function showLogin(){$('#login').classList.remove('hidden');clearInterval(timer)}function hideLogin(){$('#login').classList.add('hidden');if(!timer)timer=setInterval(load,3000)}
+    $('#loginForm').addEventListener('submit',async e=>{e.preventDefault();$('#loginError').textContent='';const r=await fetch('/dashboard/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:$('#token').value})});$('#token').value='';if(r.ok){hideLogin();load()}else $('#loginError').textContent='Неверный admin-токен'});
+    $('#logout').onclick=async()=>{await fetch('/dashboard/session',{method:'DELETE'});showLogin()};$('#refresh').onclick=load;['search','platform','level'].forEach(id=>$('#'+id).addEventListener(id==='search'?'input':'change',()=>{renderEvents();renderJobs()}));load();
+  </script>
+</body>
+</html>

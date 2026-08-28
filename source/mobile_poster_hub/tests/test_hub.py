@@ -70,6 +70,43 @@ class HubFlowTest(unittest.TestCase):
     def job_detail(self, job_id):
         return self.client.get(f"/jobs/{job_id}", headers=self.admin_headers).json()
 
+    def test_dashboard_requires_login_and_returns_redacted_activity(self):
+        created = self.create_job(key="dashboard-job")
+        self.assertEqual(created.status_code, 201)
+        page = self.client.get("/dashboard")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Ferma Hub", page.text)
+        self.assertEqual(self.client.get("/dashboard/activity").status_code, 401)
+        local_login = self.client.post(
+            "/dashboard/local-session", headers={"host": "127.0.0.1:18082"}
+        )
+        self.assertEqual(local_login.status_code, 200)
+        self.assertEqual(self.client.get("/dashboard/activity").status_code, 200)
+        self.client.cookies.clear()
+        self.assertEqual(
+            self.client.post(
+                "/dashboard/local-session", headers={"host": "public.example"}
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post("/dashboard/session", json={"token": "wrong-token"}).status_code,
+            401,
+        )
+        login = self.client.post(
+            "/dashboard/session", json={"token": os.environ["HUB_ADMIN_TOKEN"]}
+        )
+        self.assertEqual(login.status_code, 200)
+        self.assertIn("HttpOnly", login.headers["set-cookie"])
+        activity = self.client.get("/dashboard/activity")
+        self.assertEqual(activity.status_code, 200)
+        payload = activity.json()
+        self.assertEqual(payload["jobs"][0]["job_id"], created.json()["job_id"])
+        self.assertTrue(all("payload_json" not in event for event in payload["events"]))
+        self.assertNotIn("lease_token", payload["jobs"][0])
+        self.assertEqual(self.client.delete("/dashboard/session").status_code, 200)
+        self.assertEqual(self.client.get("/dashboard/activity").status_code, 401)
+
     def test_job_is_claimed_only_by_eligible_registered_device(self):
         created = self.create_job()
         self.assertEqual(created.status_code, 201)

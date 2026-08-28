@@ -20,6 +20,7 @@ import com.elevium.mobileposteragent.data.EvidenceUploadResult
 import com.elevium.mobileposteragent.data.HubContract
 import com.elevium.mobileposteragent.data.HubApi
 import com.elevium.mobileposteragent.data.HubHttpException
+import com.elevium.mobileposteragent.data.HubStatusResponse
 import com.elevium.mobileposteragent.data.JobStatusReport
 import com.elevium.mobileposteragent.data.LeaseLostException
 import com.elevium.mobileposteragent.model.PublishJob
@@ -46,6 +47,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 class AgentForegroundService : LifecycleService() {
+    private val runLoopLock = Any()
+    @Volatile
+    private var runLoopJob: Job? = null
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -59,13 +64,27 @@ class AgentForegroundService : LifecycleService() {
                 0
             },
         )
-        lifecycleScope.launch {
-            runLoop()
-        }
+        ensureRunLoop()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        ensureRunLoop()
         return Service.START_STICKY
+    }
+
+    private fun ensureRunLoop() {
+        synchronized(runLoopLock) {
+            if (runLoopJob?.isActive == true) return
+            runLoopJob = lifecycleScope.launch {
+                try {
+                    runLoop()
+                } finally {
+                    synchronized(runLoopLock) {
+                        runLoopJob = null
+                    }
+                }
+            }
+        }
     }
 
     override fun onBind(intent: Intent): IBinder? {
@@ -83,7 +102,6 @@ class AgentForegroundService : LifecycleService() {
                     val automationState =
                 when {
                     accessibility == null -> "blocked_no_accessibility"
-                    !DebugScreenshotCapture.hasVerifiedPermission() -> "blocked_no_screen_capture"
                     accessibility.prepareAutomationWindow() -> "ready"
                             accessibility.canAutomate() -> "ready"
                             else -> "blocked_no_active_window"
@@ -120,11 +138,28 @@ class AgentForegroundService : LifecycleService() {
         }
 
         val heartbeatJob = launch(Dispatchers.IO) { runHeartbeatLoop(api, job) }
-        val report = executeActiveJob(api, accessibility, job)
-        heartbeatJob.cancelAndJoin()
-        val terminal = api.updateJobStatus(job, report)
-        if (terminal.ignoredReport || terminal.status != report.expectedPersistedStatus) {
-            Log.i(TAG, "Hub ignored ${report.status} for ${job.jobId}; stored=${terminal.status}")
+        try {
+            val report = executeActiveJob(api, accessibility, job)
+            var terminal: HubStatusResponse? = null
+            for (attempt in 1..TERMINAL_STATUS_ATTEMPTS) {
+                try {
+                    terminal = api.updateJobStatus(job, report)
+                    break
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: LeaseLostException) {
+                    throw error
+                } catch (error: Exception) {
+                    if (attempt == TERMINAL_STATUS_ATTEMPTS) throw error
+                    delay(TERMINAL_STATUS_RETRY_DELAY_MS * attempt)
+                }
+            }
+            val persisted = checkNotNull(terminal)
+            if (persisted.ignoredReport || persisted.status != report.expectedPersistedStatus) {
+                Log.i(TAG, "Hub ignored ${report.status} for ${job.jobId}; stored=${persisted.status}")
+            }
+        } finally {
+            heartbeatJob.cancelAndJoin()
         }
     }
 
@@ -155,6 +190,13 @@ class AgentForegroundService : LifecycleService() {
         accessibility: AgentAccessibilityService,
         job: PublishJob,
     ): JobStatusReport = coroutineScope {
+        if (!DebugScreenshotCapture.hasVerifiedPermission()) {
+            api.addEvent(
+                job,
+                level = "warning",
+                message = "Screen capture permission is unavailable; real publish may continue, while dry-run terminal evidence remains fail-closed",
+            )
+        }
         val importedMedia = try {
             MediaPreparer.prepare(this@AgentForegroundService, job)
         } catch (error: CancellationException) {
@@ -436,6 +478,8 @@ class AgentForegroundService : LifecycleService() {
         private const val SCREENSHOT_RETRY_DELAY_MS = 500L
         private const val TERMINAL_CAPTURE_IDLE_TIMEOUT_MS = 4_000L
         private const val TERMINAL_CAPTURE_ATTEMPTS = 3
+        private const val TERMINAL_STATUS_ATTEMPTS = 3
+        private const val TERMINAL_STATUS_RETRY_DELAY_MS = 2_000L
         private const val TERMINAL_CAPTURE_RETRY_DELAY_MS = 350L
         private const val HEARTBEAT_INTERVAL_MS = 10_000L
         private const val HEARTBEAT_RETRY_DELAY_MS = 2_000L

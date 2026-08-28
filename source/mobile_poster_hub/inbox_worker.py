@@ -12,6 +12,8 @@ import shutil
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
+import uuid
 from pathlib import Path
 
 
@@ -33,6 +35,22 @@ TARGETS = {
 MEDIA_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov"}
 
 
+def is_safe_public_base_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value.strip())
+    return parsed.scheme == "https" and bool(parsed.hostname) or (
+        parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+    )
+
+
+def submission_id(platform: str, source: Path, content_hash: str, arrival_token: str = "") -> str:
+    stat = source.stat()
+    fingerprint = (
+        f"v3\0{platform}\0{source.name}\0{stat.st_mtime_ns}\0{stat.st_ctime_ns}\0"
+        f"{content_hash}\0{arrival_token}"
+    )
+    return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+
+
 def ensure_layout() -> None:
     MEDIA.mkdir(parents=True, exist_ok=True)
     for platform in (*TARGETS, "YouTube"):
@@ -42,6 +60,16 @@ def ensure_layout() -> None:
 
 def submit(platform: str, source: Path) -> None:
     content_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    arrival_marker = source.with_name(source.name + ".farm-arrival")
+    try:
+        arrival_token = arrival_marker.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        arrival_token = uuid.uuid4().hex
+        arrival_marker.write_text(arrival_token, encoding="ascii")
+    if not arrival_token:
+        arrival_token = uuid.uuid4().hex
+        arrival_marker.write_text(arrival_token, encoding="ascii")
+    submission_hash = submission_id(platform, source, content_hash, arrival_token)
     public_name = f"{content_hash}{source.suffix.lower()}"
     public_path = MEDIA / public_name
     if not public_path.exists():
@@ -67,7 +95,7 @@ def submit(platform: str, source: Path) -> None:
         headers={
             "Content-Type": "application/json",
             "X-Hub-Token": ADMIN_TOKEN,
-            "Idempotency-Key": f"folder-{platform.lower()}-{content_hash}",
+            "Idempotency-Key": f"folder-{platform.lower()}-{submission_hash}",
         },
     )
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -81,40 +109,48 @@ def submit(platform: str, source: Path) -> None:
         json.dumps({"job_id": result["job_id"], "platform": platform, "media": destination.name}),
         encoding="utf-8",
     )
+    arrival_marker.unlink(missing_ok=True)
 
 
 def reconcile_submitted() -> None:
     for platform in TARGETS:
-        queued = INBOX / platform / "Queued"
-        for receipt in queued.glob("*.farm-job.json"):
-            try:
-                metadata = json.loads(receipt.read_text(encoding="utf-8"))
-                request = urllib.request.Request(
-                    f"{HUB_LOCAL_URL}/jobs/{metadata['job_id']}",
-                    headers={"X-Hub-Token": ADMIN_TOKEN},
-                )
-                with urllib.request.urlopen(request, timeout=15) as response:
-                    status = json.loads(response.read().decode("utf-8"))["job"]["status"]
-                if status == "succeeded":
-                    state = "Published"
-                elif status in {"ready_to_publish", "needs_review", "dead_letter"}:
-                    state = "NeedsReview"
-                else:
+        # A job can be reconciled from needs_review to succeeded after the platform finishes
+        # asynchronous processing and an exact publication receipt is verified. Keep following
+        # those receipts so the folder view reflects the authoritative Hub state instead of
+        # leaving successfully published media stranded in NeedsReview forever.
+        for source_state in ("Queued", "NeedsReview"):
+            source_dir = INBOX / platform / source_state
+            for receipt in source_dir.glob("*.farm-job.json"):
+                try:
+                    metadata = json.loads(receipt.read_text(encoding="utf-8"))
+                    request = urllib.request.Request(
+                        f"{HUB_LOCAL_URL}/jobs/{metadata['job_id']}",
+                        headers={"X-Hub-Token": ADMIN_TOKEN},
+                    )
+                    with urllib.request.urlopen(request, timeout=15) as response:
+                        status = json.loads(response.read().decode("utf-8"))["job"]["status"]
+                    if status == "succeeded":
+                        state = "Published"
+                    elif status in {"ready_to_publish", "needs_review", "dead_letter"}:
+                        state = "NeedsReview"
+                    else:
+                        continue
+                    if state == source_state:
+                        continue
+                    media = source_dir / metadata["media"]
+                    target = INBOX / platform / state
+                    if media.exists():
+                        media.replace(target / media.name)
+                    caption = media.with_suffix(".txt")
+                    if caption.exists():
+                        caption.replace(target / caption.name)
+                    receipt.replace(target / receipt.name)
+                except (KeyError, OSError, ValueError, urllib.error.URLError):
                     continue
-                media = queued / metadata["media"]
-                target = INBOX / platform / state
-                if media.exists():
-                    media.replace(target / media.name)
-                caption = media.with_suffix(".txt")
-                if caption.exists():
-                    caption.replace(target / caption.name)
-                receipt.replace(target / receipt.name)
-            except (KeyError, OSError, ValueError, urllib.error.URLError):
-                continue
 
 
 def scan_once() -> None:
-    if not ADMIN_TOKEN or not PUBLIC_BASE_URL.startswith("https://"):
+    if not ADMIN_TOKEN or not is_safe_public_base_url(PUBLIC_BASE_URL):
         return
     reconcile_submitted()
     for platform in TARGETS:

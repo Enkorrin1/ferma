@@ -123,7 +123,11 @@ class AgentAccessibilityService : AccessibilityService() {
         clearTerminalSocialProof()
         clearPinterestBoardSelectionProof()
         publishDeadlineAt = SystemClock.uptimeMillis() +
-            if (SocialDryRunPolicy.automationTarget(job.target) != null || job.target == "youtube_short") {
+            if (
+                SocialDryRunPolicy.automationTarget(job.target) != null ||
+                job.target == "threads_post" ||
+                job.target == "youtube_short"
+            ) {
                 SOCIAL_PUBLISH_TIMEOUT_MS
             } else {
                 PUBLISH_TIMEOUT_MS
@@ -215,11 +219,13 @@ class AgentAccessibilityService : AccessibilityService() {
     private fun publishSocialFlow(job: PublishJob): Boolean {
         val target = SocialDryRunPolicy.automationTarget(job.target)
             ?: return fail("Unsupported social dry-run target: ${job.target}")
-        val expectedAccount = SocialDryRunPolicy.normalizeAccountLabel(
+        var expectedAccount = SocialDryRunPolicy.normalizeAccountLabel(
             target.platform,
-            job.platformAccountLabel ?: job.accountLabel,
+            job.platformAccountLabel ?: job.accountLabel.takeIf { SocialDryRunPolicy.isDryRun(job.target) },
         )
-            ?: return needsReview("Social dry-run requires a nonempty canonical Hub account_label")
+        if (expectedAccount == null && SocialDryRunPolicy.isDryRun(job.target)) {
+            return needsReview("Social dry-run requires a nonempty canonical Hub account_label")
+        }
         moveAwayFromAgentUiIfNeeded()
         val appName = if (target.platform == SocialPlatform.INSTAGRAM) "Instagram" else "TikTok"
         if (!launchPackageAndWait(target.packageName, appName)) return false
@@ -227,7 +233,11 @@ class AgentAccessibilityService : AccessibilityService() {
             // Interrupted runs commonly leave the final Share composer in the foreground.
             // Re-open the exact configured profile before account proof so a fresh job never
             // inherits a stale editor or accidentally treats its Share control as navigation.
-            openInstagramProfile(expectedAccount)
+            if (expectedAccount != null) {
+                openInstagramProfile(expectedAccount)
+            } else {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+            }
             SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
         }
         // Package focus precedes the first fully populated profile tree on both apps.  Wait a
@@ -241,7 +251,9 @@ class AgentAccessibilityService : AccessibilityService() {
         ) {
             performGlobalAction(GLOBAL_ACTION_BACK)
             SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
-            openInstagramProfile(expectedAccount)
+            if (expectedAccount != null) {
+                openInstagramProfile(expectedAccount)
+            }
             SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
             snapshot = acquireStableSocialAccessibilitySnapshot()
         }
@@ -263,7 +275,11 @@ class AgentAccessibilityService : AccessibilityService() {
                     }
                 }
             }
-            openInstagramProfile(expectedAccount)
+            if (expectedAccount != null) {
+                openInstagramProfile(expectedAccount)
+            } else {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+            }
             SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
             snapshot = acquireStableSocialAccessibilitySnapshot()
         }
@@ -353,10 +369,70 @@ class AgentAccessibilityService : AccessibilityService() {
             SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
             snapshot = acquireStableSocialAccessibilitySnapshot()
         }
+        if (
+            expectedAccount == null &&
+            target.platform == SocialPlatform.INSTAGRAM &&
+            SocialAccessibilitySnapshotPolicy.detectInstagramOwnedAccount(snapshot) == null
+        ) {
+            if (snapshot.packageName != target.packageName) {
+                launchPackageAndWait(target.packageName, appName)
+                snapshot = acquireStableSocialAccessibilitySnapshot()
+            }
+            val openedProfile = if (SocialAccessibilitySnapshotPolicy.mayOpenInstagramProfile(snapshot)) {
+                clickExactVisibleViewIdAtBounds(
+                    SocialAccessibilitySnapshotPolicy.INSTAGRAM_PROFILE_ENTRY_VIEW_ID,
+                    SocialAccessibilitySnapshotPolicy.INSTAGRAM_PROFILE_ENTRY_BOUNDS,
+                )
+            } else {
+                tapScreen(INSTAGRAM_PROFILE_CENTER_X, INSTAGRAM_PROFILE_CENTER_Y)
+            }
+            if (openedProfile) {
+                snapshot = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+                    SocialAccessibilitySnapshotPolicy.detectInstagramOwnedAccount(it) != null
+                } ?: acquireStableSocialAccessibilitySnapshot()
+            }
+            // Instagram can restore a reel close-up over the selected profile tab. In that
+            // state the tab tap succeeds but the owned-profile header is not present. Dismiss
+            // that non-editor overlay once, then explicitly reopen the profile and require the
+            // full owned-profile proof. This happens before any create/media action.
+            if (SocialAccessibilitySnapshotPolicy.detectInstagramOwnedAccount(snapshot) == null) {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+                snapshot = acquireStableSocialAccessibilitySnapshot()
+                if (snapshot.packageName != target.packageName) {
+                    launchPackageAndWait(target.packageName, appName)
+                    snapshot = acquireStableSocialAccessibilitySnapshot()
+                }
+                val reopenedProfile = if (SocialAccessibilitySnapshotPolicy.mayOpenInstagramProfile(snapshot)) {
+                    clickExactVisibleViewIdAtBounds(
+                        SocialAccessibilitySnapshotPolicy.INSTAGRAM_PROFILE_ENTRY_VIEW_ID,
+                        SocialAccessibilitySnapshotPolicy.INSTAGRAM_PROFILE_ENTRY_BOUNDS,
+                    )
+                } else {
+                    tapScreen(INSTAGRAM_PROFILE_CENTER_X, INSTAGRAM_PROFILE_CENTER_Y)
+                }
+                if (reopenedProfile) {
+                    snapshot = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+                        SocialAccessibilitySnapshotPolicy.detectInstagramOwnedAccount(it) != null
+                    } ?: acquireStableSocialAccessibilitySnapshot()
+                }
+            }
+        }
+        if (expectedAccount == null) {
+            expectedAccount = when (target.platform) {
+                SocialPlatform.INSTAGRAM -> SocialAccessibilitySnapshotPolicy.detectInstagramOwnedAccount(snapshot)
+                SocialPlatform.TIKTOK -> SocialAccessibilitySnapshotPolicy.detectTikTokOwnedAccount(snapshot)
+            }
+            if (expectedAccount == null) {
+                return needsReview("$appName current logged-in account could not be proven from its owned profile; no UI action was performed")
+            }
+            step("social-current-device-account-proven")
+        }
+        val verifiedAccount = expectedAccount
         val flowDecision = SocialAccessibilitySnapshotPolicy.evaluateFlow(
             platform = target.platform,
             expectedPackage = target.packageName,
-            expectedAccount = expectedAccount,
+            expectedAccount = verifiedAccount,
             expectedMediaPath = preparedMediaPath,
             expectedMediaName = preparedMediaName,
             snapshot = snapshot,
@@ -385,7 +461,7 @@ class AgentAccessibilityService : AccessibilityService() {
         }
         val accountFixture = SocialAccessibilitySnapshotPolicy.accountFixtureDiagnostic(
             target.platform,
-            expectedAccount,
+            verifiedAccount,
             snapshot,
         )
         step(accountFixture.redactedMessage())
@@ -402,7 +478,7 @@ class AgentAccessibilityService : AccessibilityService() {
             )
         }
         if (target.platform == SocialPlatform.INSTAGRAM) {
-            return publishVerifiedInstagramFlow(job, expectedAccount, snapshot)
+            return publishVerifiedInstagramFlow(job, verifiedAccount, snapshot)
         }
         if (!flowDecision.exactMediaVisible) {
             val exactShareUri = preparedMediaShareUri
@@ -665,17 +741,20 @@ class AgentAccessibilityService : AccessibilityService() {
                 SocialAccessibilitySnapshotPolicy.isVerifiedInstagramDirectShareComposer(candidate, job.caption) ||
                 SocialAccessibilitySnapshotPolicy.isInstagramOwnedCaptionComposerBase(candidate)
         } ?: return needsReview("Instagram exact caption composer was not verifiable")
-        if (
-            prePublishCount > 0 && job.caption.isBlank() &&
-            SocialAccessibilitySnapshotPolicy.isInstagramOwnedCaptionComposerBase(captionComposer)
-        ) {
+        if (SocialAccessibilitySnapshotPolicy.isInstagramOwnedCaptionComposerBase(captionComposer)) {
+            if (job.caption.isNotBlank() && !setUniqueVisibleEditableText(job.caption)) {
+                return needsReview("Instagram exact inline caption field could not be set and read back")
+            }
+            val verifiedDirectComposer = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+                SocialAccessibilitySnapshotPolicy.isVerifiedInstagramDirectShareComposer(it, job.caption)
+            } ?: return needsReview("Instagram exact inline caption field could not be set and read back")
             if (job.target == "instagram_reel") {
-                return publishVerifiedInstagramFinalAction(job, expectedAccount, prePublishCount, captionComposer)
+                return publishVerifiedInstagramFinalAction(job, expectedAccount, prePublishCount, verifiedDirectComposer)
             }
             terminalSocialProofJobId = job.jobId
             terminalSocialProofAttempt = job.attemptNumber
             terminalSocialProofPackage = "com.instagram.android"
-            terminalSocialProofFingerprint = captionComposer.fingerprint
+            terminalSocialProofFingerprint = verifiedDirectComposer.fingerprint
             return socialReadyToPublish("Instagram direct final Share composer is ready; Share was not pressed")
         }
         if (!SocialAccessibilitySnapshotPolicy.isInstagramCaptionComposerStructure(captionComposer)) {
@@ -906,10 +985,11 @@ class AgentAccessibilityService : AccessibilityService() {
         if (!target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) return false
         SystemClock.sleep(350)
         if (uniqueTarget()?.text?.toString()?.trim() != value.trim()) return false
-        // TikTok keeps the IME open after ACTION_SET_TEXT. The obscured composer does not
-        // expose the complete final-action structure, so close only the active keyboard
-        // before taking the immutable verification snapshot. No social action is clicked.
-        performGlobalAction(GLOBAL_ACTION_BACK)
+        // TikTok keeps the IME open after ACTION_SET_TEXT. On the current build a global Back
+        // can leave the composer entirely instead of merely hiding the keyboard. Tap the exact
+        // inert divider between caption controls and options; it only clears focus and cannot
+        // reach Drafts/Post or any publication control.
+        tapScreen(TIKTOK_IME_DISMISS_CENTER_X, TIKTOK_IME_DISMISS_CENTER_Y)
         SystemClock.sleep(500)
         return uniqueTarget()?.text?.toString()?.trim() == value.trim()
     }
@@ -1005,8 +1085,31 @@ class AgentAccessibilityService : AccessibilityService() {
             }
             for (index in 0 until node.childCount) node.getChild(index)?.let(queue::addLast)
         }
-        if (matches.size != 1) return false
-        return clickNode(matches.single())
+        // Some current app builds expose the same semantic button through two accessibility
+        // wrappers at the exact same screen rectangle. Treat those as one physical control,
+        // while still failing closed when identical text exists at different locations.
+        val physicalMatches = matches.distinctBy { node ->
+            val bounds = Rect().also(node::getBoundsInScreen)
+            "${bounds.left}:${bounds.top}:${bounds.right}:${bounds.bottom}"
+        }
+        if (physicalMatches.size != 1) return false
+        return clickNode(physicalMatches.single())
+    }
+
+    private fun hasExactVisibleText(exactText: String): Boolean {
+        val root = activeAccessibilityRoot() ?: return false
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        while (queue.isNotEmpty()) {
+            val node = queue.removeFirst()
+            if (node.isVisibleToUser && (
+                    node.text?.toString()?.trim() == exactText ||
+                        node.contentDescription?.toString()?.trim() == exactText
+                    )
+            ) return true
+            for (index in 0 until node.childCount) node.getChild(index)?.let(queue::addLast)
+        }
+        return false
     }
 
     private fun verifyCurrentSocialDryRunEditor(job: PublishJob): Boolean {
@@ -1099,8 +1202,24 @@ class AgentAccessibilityService : AccessibilityService() {
         if (!launchPackageAndWait("com.instagram.barcelona", "Threads")) return false
         SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
         var home = acquireStableSocialAccessibilitySnapshot()
-        if (SocialAccessibilitySnapshotPolicy.isThreadsInstagramStoryPrompt(home)) {
-            performGlobalAction(GLOBAL_ACTION_BACK)
+        // Threads restores any unfinished child surface across launches (composer, Gallery,
+        // Music, prompt). Unwind only with Back until the exact owned Home is visible. This
+        // cannot publish or mutate content and prevents coordinates from being applied to a
+        // stale child surface from a previous queue item.
+        repeat(THREADS_STARTUP_BACK_LIMIT) {
+            if (SocialAccessibilitySnapshotPolicy.isThreadsOwnedHome(home, expectedAccount)) {
+                return@repeat
+            }
+            if (home.packageName != "com.instagram.barcelona") {
+                return@repeat
+            }
+            if (SocialAccessibilitySnapshotPolicy.isThreadsDiscardDraftPrompt(home)) {
+                if (!clickExactVisibleText("Don't save")) {
+                    return needsReview("Threads stale draft could not be discarded safely; Post was not pressed")
+                }
+            } else {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+            }
             SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
             home = acquireStableSocialAccessibilitySnapshot()
         }
@@ -1137,20 +1256,75 @@ class AgentAccessibilityService : AccessibilityService() {
             return needsReview("Threads exact Gallery Done was not uniquely actionable; Post was not pressed")
         }
         val ready = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
-            SocialAccessibilitySnapshotPolicy.isThreadsReadyComposer(it, expectedAccount, job.caption)
+            SocialAccessibilitySnapshotPolicy.isThreadsReadyComposer(
+                snapshot = it,
+                expectedAccount = expectedAccount,
+                expectedCaption = job.caption,
+                mediaSelectedInCurrentAttempt = true,
+            )
         } ?: return needsReview("Threads media/caption readback was not verifiable; Post was not pressed")
         if (!tapScreen(THREADS_POST_CENTER_X, THREADS_POST_CENTER_Y)) {
             return needsReview("Threads exact final Post was not actionable")
         }
-        val receipt = waitForTikTokSnapshot(THREADS_RECEIPT_TIMEOUT_MS) {
-            SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(it, ready.fingerprint)
-        } ?: return needsReview("Threads Post was pressed after exact verification, but its fresh receipt was unavailable")
-        if (!SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(receipt, ready.fingerprint)) {
+        waitForTikTokSnapshot(THREADS_RECEIPT_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isThreadsOwnedHome(it, expectedAccount)
+        } ?: return needsReview("Threads Post was pressed, but the app did not return to its owned Home")
+        if (!tapScreen(THREADS_PROFILE_CENTER_X, THREADS_PROFILE_CENTER_Y)) {
+            return needsReview("Threads Post was pressed, but profile verification was not actionable")
+        }
+        val receipt = waitForThreadsPublicationReceipt(
+            prePostFingerprint = ready.fingerprint,
+            expectedAccount = expectedAccount,
+            expectedCaption = job.caption,
+        ) ?: return needsReview("Threads Post was pressed after exact verification, but its fresh receipt was unavailable")
+        if (!SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(
+                receipt,
+                ready.fingerprint,
+                expectedAccount,
+                job.caption,
+            )) {
             return needsReview("Threads fresh publication receipt changed after Post")
         }
         verifiedPublicationId = "threads:${job.jobId}"
         step("social:threads:publication-receipt")
         return true
+    }
+
+    private fun waitForThreadsPublicationReceipt(
+        prePostFingerprint: String,
+        expectedAccount: String,
+        expectedCaption: String,
+    ): SocialAccessibilitySnapshot? {
+        val startedAt = SystemClock.uptimeMillis()
+        var nextScrollAt = startedAt + THREADS_RECEIPT_SCROLL_INTERVAL_MS
+        var scrollAttempts = 0
+        while (SystemClock.uptimeMillis() - startedAt < THREADS_RECEIPT_TIMEOUT_MS) {
+            if (checkPublishTimeout()) return null
+            val snapshot = acquireStableSocialAccessibilitySnapshot()
+            if (SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(
+                    snapshot,
+                    prePostFingerprint,
+                    expectedAccount,
+                    expectedCaption,
+                )) {
+                return snapshot
+            }
+            val now = SystemClock.uptimeMillis()
+            if (
+                snapshot.packageName == "com.instagram.barcelona" &&
+                scrollAttempts < THREADS_RECEIPT_SCROLL_LIMIT &&
+                now >= nextScrollAt
+            ) {
+                // New profiles can place onboarding cards above the first post. A bounded,
+                // action-free profile scroll reveals the exact caption receipt without
+                // clicking content or mutating the publication.
+                scrollPinterestComposer(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                scrollAttempts++
+                nextScrollAt = now + THREADS_RECEIPT_SCROLL_INTERVAL_MS
+            }
+            SystemClock.sleep(THREADS_RECEIPT_POLL_MS)
+        }
+        return null
     }
 
     private fun publishYouTubeShort(job: PublishJob): Boolean {
@@ -1159,9 +1333,24 @@ class AgentAccessibilityService : AccessibilityService() {
         moveAwayFromAgentUiIfNeeded()
         if (!launchPackageAndWait("com.google.android.youtube", "YouTube")) return false
         var landing = acquireStableSocialAccessibilitySnapshot()
-        if (SocialAccessibilitySnapshotPolicy.isYouTubeShortEntry(landing)) {
+        // Resume from any interrupted YouTube creation layer by walking Back through at most
+        // six app-owned screens.  This never activates a content or publishing control.  Stop
+        // as soon as the exact account surface is reached; a normal Home feed then proceeds to
+        // the exact You tab below.
+        repeat(YOUTUBE_STARTUP_BACK_LIMIT) {
+            if (SocialAccessibilitySnapshotPolicy.isYouTubeOwnedChannel(landing, expectedAccount) ||
+                SocialAccessibilitySnapshotPolicy.isYouTubeAccountTab(landing, expectedAccount)
+            ) return@repeat
+            // YouTube's camera surface can temporarily report a null accessibility package.
+            // Back is still the only non-mutating recovery action and is safe even when the
+            // package metadata is missing.  Relaunch only after the unwind step.
             performGlobalAction(GLOBAL_ACTION_BACK)
             SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+            if (currentPackageName() != "com.google.android.youtube" &&
+                !launchPackageAndWait("com.google.android.youtube", "YouTube")
+            ) {
+                return needsReview("YouTube landing surface could not be restored; Upload Short was not pressed")
+            }
             landing = acquireStableSocialAccessibilitySnapshot()
         }
         if (!SocialAccessibilitySnapshotPolicy.isYouTubeOwnedChannel(landing, expectedAccount) &&
@@ -1190,9 +1379,30 @@ class AgentAccessibilityService : AccessibilityService() {
         if (!tapScreen(YOUTUBE_CREATE_CENTER_X, YOUTUBE_CREATE_CENTER_Y)) {
             return needsReview("YouTube exact Create control was not actionable; Upload Short was not pressed")
         }
-        waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
-            SocialAccessibilitySnapshotPolicy.isYouTubeShortEntry(it)
-        } ?: return needsReview("YouTube Short entry was not verifiable; Upload Short was not pressed")
+        // The live camera preview continuously advances the accessibility generation behind
+        // YouTube's modal, so a strict immutable snapshot may never settle. "Start over" is
+        // an exact, non-publishing action unique to the stale-draft dialog; clear it directly
+        // before requiring a stable Short-entry snapshot.
+        SystemClock.sleep(YOUTUBE_DRAFT_PROMPT_SETTLE_MS)
+        val staleDraftDiscarded = clickExactVisibleText("Start over") ||
+            (currentPackageName() == "com.google.android.youtube" &&
+                tapScreen(YOUTUBE_START_OVER_CENTER_X, YOUTUBE_START_OVER_CENTER_Y))
+        var shortEntry = if (staleDraftDiscarded) {
+            waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+                SocialAccessibilitySnapshotPolicy.isYouTubeShortEntry(it)
+            } ?: return needsReview("YouTube Short entry was not verifiable after discarding the stale draft")
+        } else {
+            waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+                SocialAccessibilitySnapshotPolicy.isYouTubeShortEntry(it) ||
+                    SocialAccessibilitySnapshotPolicy.isYouTubeDraftPrompt(it)
+            } ?: return needsReview("YouTube Short entry was not verifiable; Upload Short was not pressed")
+        }
+        if (SocialAccessibilitySnapshotPolicy.isYouTubeDraftPrompt(shortEntry)) {
+            return needsReview("YouTube stale draft prompt remained visible after exact cleanup; Upload Short was not pressed")
+        }
+        if (!SocialAccessibilitySnapshotPolicy.isYouTubeShortEntry(shortEntry)) {
+            return needsReview("YouTube Short entry changed before media selection; Upload Short was not pressed")
+        }
         if (!tapScreen(YOUTUBE_GALLERY_CENTER_X, YOUTUBE_GALLERY_CENTER_Y)) {
             return needsReview("YouTube Add from Gallery was not actionable; Upload Short was not pressed")
         }
@@ -1232,9 +1442,17 @@ class AgentAccessibilityService : AccessibilityService() {
         if (!clickExactVisibleText("No, it's not made for kids")) {
             return needsReview("YouTube exact not-made-for-kids option was not actionable; Upload Short was not pressed")
         }
+        waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
+            SocialAccessibilitySnapshotPolicy.isYouTubeNotMadeForKidsSelected(it)
+        } ?: return needsReview("YouTube not-made-for-kids selection was not verified on its exact screen; Upload Short was not pressed")
         performGlobalAction(GLOBAL_ACTION_BACK)
         val ready = waitForTikTokSnapshot(TIKTOK_EDITOR_LOAD_TIMEOUT_MS) {
-            SocialAccessibilitySnapshotPolicy.isYouTubeReadyToUpload(it, expectedAccount, job.caption)
+            SocialAccessibilitySnapshotPolicy.isYouTubeReadyToUpload(
+                it,
+                expectedAccount,
+                job.caption,
+                audienceVerifiedInCurrentFlow = true,
+            )
         } ?: return needsReview("YouTube title/account/audience readback was not verifiable; Upload Short was not pressed")
         if (!clickExactVisibleText("Upload Short")) return needsReview("YouTube exact final Upload Short was not actionable")
         val receipt = waitForTikTokSnapshot(YOUTUBE_RECEIPT_TIMEOUT_MS) {
@@ -3096,6 +3314,17 @@ private fun launchPackageFromLauncher(appLabel: String): Boolean {
     private fun selectPinterestGalleryMedia(): Boolean {
         if (checkPublishTimeout()) return false
         step("pinterest:select-media")
+        val extension = preparedMediaName.orEmpty().substringAfterLast('.', "").lowercase()
+        if (extension in setOf("mp4", "mov", "webm", "mkv", "3gp")) {
+            // Pinterest opens the picker on Photos even for a prepared video. Select only the
+            // exact Videos tab before looking for the current job's path; never fall back to a
+            // visually similar photo thumbnail.
+            if (!clickExactVisibleText("Videos") && !clickExactVisibleText("Видео")) {
+                lastFailureReason = "Pinterest: exact Videos tab was unavailable for prepared video"
+                return false
+            }
+            SystemClock.sleep(SOCIAL_PROFILE_TREE_SETTLE_MS)
+        }
         if (clickPinterestMediaTileCandidate(preparedMediaPath, preparedMediaName)) {
             return true
         }
@@ -3864,8 +4093,14 @@ private fun launchPackageFromLauncher(appLabel: String): Boolean {
         private const val MEDIA_SELECTION_PHASE_TIMEOUT_MS = 7_500L
         private const val TIKTOK_CREATE_CENTER_X = 360f
         private const val TIKTOK_CREATE_CENTER_Y = 1_375f
+        private const val TIKTOK_IME_DISMISS_CENTER_X = 350f
+        private const val TIKTOK_IME_DISMISS_CENTER_Y = 590f
         private const val INSTAGRAM_PROFILE_CENTER_X = 648f
         private const val INSTAGRAM_PROFILE_CENTER_Y = 1_380f
+        private const val YOUTUBE_START_OVER_CENTER_X = 400f
+        private const val YOUTUBE_START_OVER_CENTER_Y = 842f
+        private const val YOUTUBE_DRAFT_PROMPT_SETTLE_MS = 4_000L
+        private const val YOUTUBE_STARTUP_BACK_LIMIT = 6
         private const val THREADS_CREATE_CENTER_X = 360f
         private const val THREADS_CREATE_CENTER_Y = 1_368f
         private const val THREADS_MEDIA_CENTER_X = 138f
@@ -3874,7 +4109,16 @@ private fun launchPackageFromLauncher(appLabel: String): Boolean {
         private const val THREADS_NEWEST_MEDIA_CENTER_Y = 350f
         private const val THREADS_POST_CENTER_X = 635f
         private const val THREADS_POST_CENTER_Y = 1_358f
-        private const val THREADS_RECEIPT_TIMEOUT_MS = 30_000L
+        private const val THREADS_PROFILE_CENTER_X = 625f
+        private const val THREADS_PROFILE_CENTER_Y = 1_368f
+        private const val THREADS_STARTUP_BACK_LIMIT = 4
+        // Video processing is asynchronous in Threads and regularly exceeds 30 seconds even
+        // after the Post action has been accepted. Keep the owned profile open and wait for
+        // the exact account + caption receipt instead of prematurely returning needs_review.
+        private const val THREADS_RECEIPT_TIMEOUT_MS = 600_000L
+        private const val THREADS_RECEIPT_POLL_MS = 500L
+        private const val THREADS_RECEIPT_SCROLL_INTERVAL_MS = 1_500L
+        private const val THREADS_RECEIPT_SCROLL_LIMIT = 4
         private const val YOUTUBE_PROFILE_CENTER_X = 648f
         private const val YOUTUBE_PROFILE_CENTER_Y = 1_370f
         private const val YOUTUBE_CREATE_CENTER_X = 360f

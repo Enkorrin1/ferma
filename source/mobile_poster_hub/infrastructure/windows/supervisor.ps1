@@ -100,7 +100,16 @@ function Start-OwnedChild {
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    foreach ($argument in @($Spec.Arguments)) { $psi.ArgumentList.Add([string]$argument) }
+    if ($null -ne $psi.PSObject.Properties['ArgumentList']) {
+        foreach ($argument in @($Spec.Arguments)) { $psi.ArgumentList.Add([string]$argument) }
+    } else {
+        # Windows PowerShell 5.1/.NET Framework has no ProcessStartInfo.ArgumentList.
+        # Child arguments contain no secrets; quote each value so paths and captions
+        # cannot be split by spaces when the production supervisor runs at logon.
+        $psi.Arguments = (@($Spec.Arguments) | ForEach-Object {
+            '"' + ([string]$_).Replace('"', '\"') + '"'
+        }) -join ' '
+    }
     foreach ($entry in $Spec.Environment.GetEnumerator()) { $psi.Environment[[string]$entry.Key] = [string]$entry.Value }
     if ($Spec.ContainsKey('EnvironmentFile') -and -not [string]::IsNullOrWhiteSpace([string]$Spec.EnvironmentFile)) {
         $environmentFile = Assert-PathUnderAllowedRoot -Path ([string]$Spec.EnvironmentFile) -AllowedRoots $allowed

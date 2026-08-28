@@ -307,6 +307,37 @@ internal object SocialAccessibilitySnapshotPolicy {
         } == 1
     }
 
+    fun detectInstagramOwnedAccount(snapshot: SocialAccessibilitySnapshot): String? {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return null
+        val labels = snapshot.visibleLabels().toSet()
+        if (!labels.containsAll(setOf("Edit profile", "Share profile"))) return null
+        if (instagramPostCount(snapshot) == null) return null
+        return snapshot.nodes.asSequence()
+            .filter { it.visible && !it.editable && it.viewId == INSTAGRAM_ACCOUNT_VIEW_ID }
+            .mapNotNull { node ->
+                sequenceOf(node.text, node.description)
+                    .mapNotNull { SocialDryRunPolicy.normalizeAccountLabel(SocialPlatform.INSTAGRAM, it) }
+                    .firstOrNull()
+            }
+            .distinct()
+            .singleOrNull()
+    }
+
+    fun detectTikTokOwnedAccount(snapshot: SocialAccessibilitySnapshot): String? {
+        if (!snapshot.consistent || snapshot.packageName != "com.zhiliaoapp.musically") return null
+        val labels = snapshot.visibleLabels().toSet()
+        if (labels.none { it == "Edit profile" || it == "Set up profile" }) return null
+        return snapshot.nodes.asSequence()
+            .filter { it.visible && !it.editable && it.viewId == "com.zhiliaoapp.musically:id/sxa" }
+            .mapNotNull { node ->
+                sequenceOf(node.text, node.description)
+                    .mapNotNull { SocialDryRunPolicy.normalizeAccountLabel(SocialPlatform.TIKTOK, it) }
+                    .firstOrNull()
+            }
+            .distinct()
+            .singleOrNull()
+    }
+
     fun isInstagramCreateMenu(snapshot: SocialAccessibilitySnapshot): Boolean {
         if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
         val labels = snapshot.visibleLabels().toSet()
@@ -395,7 +426,8 @@ internal object SocialAccessibilitySnapshotPolicy {
         if (!snapshot.consistent || snapshot.packageName != "com.instagram.barcelona") return false
         val expected = expectedAccount.trim().removePrefix("@").trim()
         val labels = snapshot.visibleLabels().toSet()
-        return expected.isNotBlank() && labels.contains(expected) && labels.contains("What's new?")
+        return expected.isNotBlank() && labels.contains(expected) && labels.contains("What's new?") &&
+            !labels.contains("New thread")
     }
 
     fun isThreadsInstagramStoryPrompt(snapshot: SocialAccessibilitySnapshot): Boolean {
@@ -405,9 +437,18 @@ internal object SocialAccessibilitySnapshotPolicy {
             labels.contains("Try it")
     }
 
+    fun isThreadsDiscardDraftPrompt(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.barcelona") return false
+        return snapshot.visibleLabels().toSet().containsAll(
+            setOf("Save to drafts?", "Save", "Don't save", "Keep editing"),
+        )
+    }
+
     fun isThreadsComposer(snapshot: SocialAccessibilitySnapshot, expectedAccount: String): Boolean {
-        if (!isThreadsOwnedHome(snapshot, expectedAccount)) return false
-        return snapshot.visibleLabels().contains("New thread") &&
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.barcelona") return false
+        val expected = expectedAccount.trim().removePrefix("@").trim()
+        val labels = snapshot.visibleLabels().toSet()
+        return expected.isNotBlank() && labels.contains(expected) && labels.contains("New thread") &&
             snapshot.nodes.count { it.visible && it.editable } == 1
     }
 
@@ -420,10 +461,16 @@ internal object SocialAccessibilitySnapshotPolicy {
         snapshot: SocialAccessibilitySnapshot,
         expectedAccount: String,
         expectedCaption: String,
+        mediaSelectedInCurrentAttempt: Boolean,
     ): Boolean {
+        if (!mediaSelectedInCurrentAttempt) return false
         if (!isThreadsComposer(snapshot, expectedAccount)) return false
         val labels = snapshot.visibleLabels().toSet()
-        if (!labels.containsAll(setOf("Post", "Post options", "Add to thread"))) return false
+        // Threads removes the pre-attachment "Add to thread" affordance once a video is
+        // attached. Requiring that stale label rejected the genuine final composer. Media
+        // ownership is instead carried explicitly from the exact current-job gallery
+        // selection + Done handshake performed by the service in this same attempt.
+        if (!labels.containsAll(setOf("Post", "Post options"))) return false
         val editable = snapshot.nodes.filter { it.visible && it.editable }
         return editable.size == 1 && editable.single().text.trim() == expectedCaption.trim()
     }
@@ -431,10 +478,15 @@ internal object SocialAccessibilitySnapshotPolicy {
     fun isThreadsPublicationReceipt(
         snapshot: SocialAccessibilitySnapshot,
         prePostFingerprint: String,
+        expectedAccount: String,
+        expectedCaption: String,
     ): Boolean {
         if (!snapshot.consistent || snapshot.packageName != "com.instagram.barcelona") return false
         if (prePostFingerprint.isBlank() || snapshot.fingerprint == prePostFingerprint) return false
-        return snapshot.visibleLabels().toSet().containsAll(setOf("Posted", "View"))
+        val expected = expectedAccount.trim().removePrefix("@").trim()
+        val labels = snapshot.visibleLabels().map(String::trim).toSet()
+        return expected.isNotBlank() && labels.contains(expected) &&
+            labels.contains(expectedCaption.trim()) && labels.contains("Threads")
     }
 
     fun isYouTubeOwnedChannel(snapshot: SocialAccessibilitySnapshot, expectedAccount: String): Boolean {
@@ -463,6 +515,12 @@ internal object SocialAccessibilitySnapshotPolicy {
         val labels = snapshot.visibleLabels().toSet()
         val galleryAction = labels.contains("Add from Gallery") || labels.contains("Add")
         return galleryAction && labels.containsAll(setOf("Short", "Video", "Live", "Post"))
+    }
+
+    fun isYouTubeDraftPrompt(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        val labels = snapshot.visibleLabels().toSet()
+        return labels.containsAll(setOf("Continue your draft video?", "Start over", "Continue"))
     }
 
     fun isYouTubeGallery(snapshot: SocialAccessibilitySnapshot): Boolean {
@@ -499,11 +557,26 @@ internal object SocialAccessibilitySnapshotPolicy {
         return labels.contains("Select audience") && labels.contains("No, it's not made for kids")
     }
 
-    fun isYouTubeReadyToUpload(snapshot: SocialAccessibilitySnapshot, expectedAccount: String, expectedTitle: String): Boolean {
+    fun isYouTubeNotMadeForKidsSelected(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!isYouTubeAudienceScreen(snapshot)) return false
+        return snapshot.visibleLabels().any {
+            it.trim().replace('\u2019', '\'').equals(
+                "This video is set to not made for kids",
+                ignoreCase = true,
+            )
+        }
+    }
+
+    fun isYouTubeReadyToUpload(
+        snapshot: SocialAccessibilitySnapshot,
+        expectedAccount: String,
+        expectedTitle: String,
+        audienceVerifiedInCurrentFlow: Boolean = false,
+    ): Boolean {
         if (!isYouTubeDetails(snapshot, expectedAccount)) return false
         val editable = snapshot.nodes.filter { it.visible && it.editable }
         val labels = snapshot.visibleLabels().toSet()
-        val audienceVerified = labels.contains("Not made for kids") || labels.any {
+        val audienceVerified = audienceVerifiedInCurrentFlow || labels.contains("Not made for kids") || labels.any {
             it.replace('\u2019', '\'') == "No, it's not made for kids"
         }
         val expected = expectedTitle.trim()
@@ -537,7 +610,10 @@ internal object SocialAccessibilitySnapshotPolicy {
     ): Boolean {
         if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
         val labels = snapshot.visibleLabels().toSet()
-        if (!labels.containsAll(setOf("New reel", "Edit cover", "Save draft", "Link a reel"))) return false
+        // Current Instagram renders the focused caption editor directly over the final
+        // Share composer. "Edit cover" is no longer visible there, while the owned final
+        // screen is uniquely anchored by New reel + Save draft + Link a reel + Share.
+        if (!labels.containsAll(setOf("New reel", "Save draft", "Link a reel", "Share"))) return false
         val editable = snapshot.nodes.filter { it.visible && it.editable }
         return if (expectedCaption.isBlank()) {
             editable.all { it.text.isBlank() }
@@ -616,7 +692,9 @@ internal object SocialAccessibilitySnapshotPolicy {
         val hasFreshAge = labels.any { label ->
             label == "Just now" || label == "Только что" ||
                 Regex("^(?:[0-5]?\\d)s ago$").matches(label) ||
-                Regex("^(?:[0-5]?\\d) сек.*назад$", RegexOption.IGNORE_CASE).matches(label)
+                Regex("(?:^|\\s|·)(?:[0-5]?\\d)s ago(?:$|\\s)").containsMatchIn(label) ||
+                Regex("(?:^|\\s|·)(?:[0-5]?\\d) сек.*назад(?:$|\\s)", RegexOption.IGNORE_CASE)
+                    .containsMatchIn(label)
         }
         // Photo posts expose an explicit Photo marker; ordinary videos do not. This predicate is
         // evaluated only after the exact final Post control was verified and pressed, so a fresh

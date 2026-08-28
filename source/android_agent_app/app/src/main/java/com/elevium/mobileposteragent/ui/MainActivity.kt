@@ -98,17 +98,16 @@ class MainActivity : AppCompatActivity() {
                 binding.statusText.text = getString(R.string.status_storage_permission_needed)
                 return@setOnClickListener
             }
-            if (!DebugScreenshotCapture.hasVerifiedPermission()) {
-                binding.statusText.text = "Allow screen capture before starting the agent."
-                requestScreenCapturePermission()
-                return@setOnClickListener
-            }
             configStore.save(config)
             savedConfig = config
             resetTokenReplacementField()
             AgentForegroundService.start(this)
             BootRecoveryCoordinator.setEnabled(this, true)
-            binding.statusText.text = getString(R.string.status_service_started)
+            binding.statusText.text = if (DebugScreenshotCapture.hasVerifiedPermission()) {
+                getString(R.string.status_service_started)
+            } else {
+                "Agent started. Real publishing is enabled; screen evidence is unavailable until capture permission is granted."
+            }
             binding.root.postDelayed({
                 moveTaskToBack(true)
                 finish()

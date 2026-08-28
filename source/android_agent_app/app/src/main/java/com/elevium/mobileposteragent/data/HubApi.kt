@@ -169,7 +169,10 @@ class HubApi(
     }
 
     private fun requestBuilder(url: String, leaseToken: String? = null): Request.Builder {
-        require(url.startsWith("https://", ignoreCase = true)) { "Hub URL must use HTTPS" }
+        val configuredBase = config.hubUrl.trim().trimEnd('/')
+        require(config.isValid() && url.startsWith("$configuredBase/")) {
+            "Hub URL must use HTTPS or the local USB bridge"
+        }
         val builder = Request.Builder()
             .url(url)
             .header("X-Hub-Token", config.runnerToken)

@@ -176,17 +176,36 @@ class SocialAccessibilitySnapshotTest {
             ),
         )
         assertEquals(true, SocialAccessibilitySnapshotPolicy.isThreadsComposer(composer, "pinv786"))
+        assertEquals(false, SocialAccessibilitySnapshotPolicy.isThreadsOwnedHome(composer, "pinv786"))
         assertEquals(
             true,
-            SocialAccessibilitySnapshotPolicy.isThreadsReadyComposer(composer, "pinv786", "caption"),
+            SocialAccessibilitySnapshotPolicy.isThreadsReadyComposer(
+                composer.copy(nodes = composer.nodes.filterNot { it.text == "Add to thread" }),
+                "pinv786",
+                "caption",
+                mediaSelectedInCurrentAttempt = true,
+            ),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isThreadsReadyComposer(
+                composer,
+                "pinv786",
+                "caption",
+                mediaSelectedInCurrentAttempt = false,
+            ),
         )
         val receipt = snapshot(
-            listOf(node(text = "Posted"), node(text = "View", path = "root/1")),
+            listOf(
+                node(text = "Threads"),
+                node(text = "pinv786", path = "root/1"),
+                node(text = "caption", path = "root/2"),
+            ),
             packageName = "com.instagram.barcelona",
             fingerprint = "receipt",
         )
-        assertEquals(true, SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(receipt, "composer"))
-        assertEquals(false, SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(receipt, "receipt"))
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(receipt, "composer", "pinv786", "caption"))
+        assertEquals(false, SocialAccessibilitySnapshotPolicy.isThreadsPublicationReceipt(receipt, "receipt", "pinv786", "caption"))
     }
 
     @Test
@@ -212,6 +231,26 @@ class SocialAccessibilitySnapshotTest {
     }
 
     @Test
+    fun threadsDiscardDraftPromptRequiresExactOwnedActions() {
+        val prompt = snapshot(
+            nodes = listOf(
+                node(text = "Save to drafts?"),
+                node(text = "Save", path = "root/1"),
+                node(text = "Don't save", path = "root/2"),
+                node(text = "Keep editing", path = "root/3"),
+            ),
+            packageName = "com.instagram.barcelona",
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isThreadsDiscardDraftPrompt(prompt))
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isThreadsDiscardDraftPrompt(
+                prompt.copy(nodes = prompt.nodes.filterNot { it.text == "Don't save" }),
+            ),
+        )
+    }
+
+    @Test
     fun youtubeFlowRequiresExactChannelAudienceTitleAndFreshCountReceipt() {
         val channel = snapshot(
             nodes = listOf(node(text = "@Ivanaicreator"), node(text = "1 video", path = "root/1")),
@@ -220,6 +259,21 @@ class SocialAccessibilitySnapshotTest {
         )
         assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubeOwnedChannel(channel, "@Ivanaicreator"))
         assertEquals(1, SocialAccessibilitySnapshotPolicy.youtubeVideoCount(channel))
+        val draftPrompt = snapshot(
+            nodes = listOf(
+                node(text = "Continue your draft video?"),
+                node(text = "Start over", path = "root/1"),
+                node(text = "Continue", path = "root/2"),
+            ),
+            packageName = "com.google.android.youtube",
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubeDraftPrompt(draftPrompt))
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isYouTubeDraftPrompt(
+                draftPrompt.copy(nodes = draftPrompt.nodes.filterNot { it.text == "Start over" }),
+            ),
+        )
         val details = snapshot(
             nodes = listOf(
                 node(text = "Add details"),
@@ -363,6 +417,42 @@ class SocialAccessibilitySnapshotTest {
     }
 
     @Test
+    fun ownedProfilesCanSupplyTheCurrentLoggedInAccountWithoutManualConfiguration() {
+        val instagram = snapshot(listOf(
+            node(text = "pinv786", viewId = SocialAccessibilitySnapshotPolicy.INSTAGRAM_ACCOUNT_VIEW_ID),
+            node(text = "11", viewId = SocialAccessibilitySnapshotPolicy.INSTAGRAM_POST_COUNT_VIEW_ID, path = "root/1"),
+            node(text = "Edit profile", path = "root/2"),
+            node(text = "Share profile", path = "root/3"),
+        ))
+        assertEquals("pinv786", SocialAccessibilitySnapshotPolicy.detectInstagramOwnedAccount(instagram))
+        assertEquals(
+            null,
+            SocialAccessibilitySnapshotPolicy.detectInstagramOwnedAccount(
+                instagram.copy(nodes = instagram.nodes.filterNot { it.text == "Edit profile" }),
+            ),
+        )
+
+        val tiktok = snapshot(
+            packageName = "com.zhiliaoapp.musically",
+            nodes = listOf(
+                node(text = "@pin.van4", viewId = "com.zhiliaoapp.musically:id/sxa"),
+                node(text = "Edit profile", path = "root/1"),
+            ),
+        )
+        assertEquals("pin.van4", SocialAccessibilitySnapshotPolicy.detectTikTokOwnedAccount(tiktok))
+        assertEquals(
+            null,
+            SocialAccessibilitySnapshotPolicy.detectTikTokOwnedAccount(
+                tiktok.copy(nodes = tiktok.nodes + node(
+                    text = "@other",
+                    viewId = "com.zhiliaoapp.musically:id/sxa",
+                    path = "root/2",
+                )),
+            ),
+        )
+    }
+
+    @Test
     fun tiktokCreateEntryRequiresExactAccountProofAndOneExactVisibleNode() {
         val account = node(text = "@pin.van4", viewId = "com.zhiliaoapp.musically:id/sxa")
         val create = node(
@@ -466,6 +556,18 @@ class SocialAccessibilitySnapshotTest {
         assertEquals(
             true,
             SocialAccessibilitySnapshotPolicy.isTikTokDirectPublicationReceipt(freshReceipt, "composer"),
+        )
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isTikTokDirectPublicationReceipt(
+                freshReceipt.copy(
+                    fingerprint = "fresh-feed-combined-label",
+                    nodes = freshReceipt.nodes.map {
+                        if (it.text == "2s ago") it.copy(text = "Pin Van · 1s ago") else it
+                    },
+                ),
+                "composer",
+            ),
         )
         assertEquals(
             false,
@@ -590,6 +692,30 @@ class SocialAccessibilitySnapshotTest {
             SocialAccessibilitySnapshotPolicy.isVerifiedInstagramCaptionComposer(
                 composer.copy(nodes = composer.nodes + node(text = "unexpected", editable = true, path = "root/9")),
                 "",
+            ),
+        )
+    }
+
+    @Test
+    fun instagramDirectShareComposerMatchesCurrentFocusedCaptionScreen() {
+        val composer = snapshot(
+            listOf(
+                node(text = "New reel", path = "root/0"),
+                node(text = "video (1)", editable = true, path = "root/caption"),
+                node(text = "Link a reel", path = "root/link"),
+                node(text = "Save draft", path = "root/draft"),
+                node(text = "Share", path = "root/share"),
+            ),
+        )
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isVerifiedInstagramDirectShareComposer(composer, "video (1)"),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isVerifiedInstagramDirectShareComposer(
+                composer.copy(nodes = composer.nodes.filterNot { it.text == "Share" }),
+                "video (1)",
             ),
         )
     }

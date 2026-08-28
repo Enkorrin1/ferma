@@ -1,6 +1,6 @@
 package com.elevium.mobileposteragent.model
 
-import android.net.Uri
+import java.net.URI
 
 data class AgentConfig(
     val hubUrl: String,
@@ -14,10 +14,13 @@ data class AgentConfig(
             "accountLabel=$accountLabel, pinterestBoard=$pinterestBoard)"
 
     fun isValid(): Boolean {
-        val uri = runCatching { Uri.parse(hubUrl.trim()) }.getOrNull()
+        val uri = runCatching { URI(hubUrl.trim()) }.getOrNull()
+        val host = uri?.host.orEmpty()
+        val secureRemote = uri?.scheme.equals("https", ignoreCase = true) && host.isNotBlank()
+        val localUsbBridge = uri?.scheme.equals("http", ignoreCase = true) &&
+            (host == "127.0.0.1" || host.equals("localhost", ignoreCase = true))
         return runnerToken.isNotBlank() &&
             deviceLabel.isNotBlank() &&
-            uri?.scheme.equals("https", ignoreCase = true) &&
-            !uri?.host.isNullOrBlank()
+            (secureRemote || localUsbBridge)
     }
 }

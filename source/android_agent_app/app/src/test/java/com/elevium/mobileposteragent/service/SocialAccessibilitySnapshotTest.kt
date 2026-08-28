@@ -245,6 +245,19 @@ class SocialAccessibilitySnapshotTest {
             "Ivanaicreator",
             "Farm YouTube test",
         ))
+        val emptyTitleDetails = selectedAudienceDetails.copy(nodes = selectedAudienceDetails.nodes.map {
+            if (it.editable) it.copy(text = "Caption your Short") else it
+        })
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubeReadyToUpload(
+            emptyTitleDetails,
+            "Ivanaicreator",
+            "",
+        ))
+        assertEquals(false, SocialAccessibilitySnapshotPolicy.isYouTubeReadyToUpload(
+            emptyTitleDetails,
+            "Ivanaicreator",
+            "Expected title",
+        ))
         val receipt = channel.copy(
             fingerprint = "channel-after",
             nodes = listOf(node(text = "@Ivanaicreator"), node(text = "2 videos", path = "root/1")),

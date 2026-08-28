@@ -48,6 +48,8 @@ def submit(platform: str, source: Path) -> None:
         shutil.copy2(source, public_path)
     caption_path = source.with_suffix(".txt")
     caption = caption_path.read_text(encoding="utf-8-sig") if caption_path.exists() else ""
+    if not caption.strip():
+        caption = source.stem.replace("_", " ").replace("-", " ").strip() or "New post"
     payload = {
         "target": TARGETS[platform],
         "caption": caption,

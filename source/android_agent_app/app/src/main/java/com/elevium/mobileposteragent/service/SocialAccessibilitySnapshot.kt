@@ -506,8 +506,14 @@ internal object SocialAccessibilitySnapshotPolicy {
         val audienceVerified = labels.contains("Not made for kids") || labels.any {
             it.replace('\u2019', '\'') == "No, it's not made for kids"
         }
-        return audienceVerified &&
-            editable.size == 1 && editable.single().text.trim() == expectedTitle.trim()
+        val expected = expectedTitle.trim()
+        val actual = editable.singleOrNull()?.text?.trim().orEmpty()
+        val titleVerified = if (expected.isEmpty()) {
+            actual.isEmpty() || actual == "Caption your Short"
+        } else {
+            actual == expected
+        }
+        return audienceVerified && editable.size == 1 && titleVerified
     }
 
     fun isYouTubePublicationReceipt(

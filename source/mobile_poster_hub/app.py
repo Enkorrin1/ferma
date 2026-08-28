@@ -73,7 +73,13 @@ DRY_RUN_TARGETS = frozenset({
     "tiktok_post_dry_run",
 })
 SOCIAL_DRY_RUN_TARGETS = frozenset({"instagram_reel_dry_run", "tiktok_post_dry_run"})
-REAL_PUBLICATION_TARGETS = frozenset({"instagram_reel", "tiktok_post", "pinterest_pin"})
+REAL_PUBLICATION_TARGETS = frozenset({
+    "instagram_reel",
+    "tiktok_post",
+    "pinterest_pin",
+    "threads_post",
+    "youtube_short",
+})
 
 
 class JobCreate(BaseModel):

@@ -1392,6 +1392,10 @@ class HubFlowTest(unittest.TestCase):
         self.assertTrue(idempotency["required"])
 
     def test_admin_can_idempotently_reconcile_a_physically_verified_real_publication(self):
+        self.assertEqual(
+            hub.REAL_PUBLICATION_TARGETS,
+            frozenset({"instagram_reel", "tiktok_post", "pinterest_pin", "threads_post", "youtube_short"}),
+        )
         created = self.create_job(key="admin-publication-job", target="tiktok_post")
         self.assertEqual(created.status_code, 201)
         job_id = created.json()["job_id"]

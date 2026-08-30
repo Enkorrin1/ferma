@@ -2,10 +2,12 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from base64 import b64encode
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 TEST_TEMP_ROOT = Path(__file__).resolve().parents[3] / "artifacts" / "hub-test-temp"
 TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
@@ -107,6 +109,130 @@ class HubFlowTest(unittest.TestCase):
         self.assertEqual(self.client.delete("/dashboard/session").status_code, 200)
         self.assertEqual(self.client.get("/dashboard/activity").status_code, 401)
 
+    def test_local_dashboard_can_restart_exact_connected_usb_device(self):
+        class FakeFarm:
+            def __init__(self):
+                self.actions = []
+
+            def devices(self):
+                return [hub.DeviceState("usb-1", "device", "Redmi_8")]
+
+            def inspect(self, device):
+                return hub.DeviceState(
+                    device.serial, device.adb_state, device.model, True, True, "Готов",
+                    accessibility_ready=True,
+                )
+
+            def inspect_many(self, devices):
+                return [self.inspect(device) for device in devices]
+
+            def control(self, device, action):
+                self.last = (device.serial, action)
+                self.actions.append(self.last)
+                return hub.DeviceState(
+                    device.serial, device.adb_state, device.model, True, True, "Готов",
+                    accessibility_ready=True,
+                )
+
+            def control_many(self, devices, action):
+                return [self.control(device, action) for device in devices]
+
+            def diagnose(self, device):
+                return SimpleNamespace(
+                    serial=device.serial, model=device.model, android_version="9", sdk="28",
+                    battery_percent=73, charging=True, free_storage_mb=2048,
+                    agent_version="0.1.35-video", bridge_ready=True, agent_running=True,
+                    accessibility_ready=True,
+                )
+
+            def install_agent(self, device, apk_path):
+                self.installed = (device.serial, Path(apk_path).name)
+                return {"installed": True, "message": "Агент установлен"}
+
+            def pair_agent(self, device, code):
+                self.paired = (device.serial, code)
+                return {"paired": True, "message": "Код подключения передан телефону"}
+
+        fake = FakeFarm()
+        login = self.client.post("/dashboard/session", json={"token": os.environ["HUB_ADMIN_TOKEN"]})
+        self.assertEqual(200, login.status_code)
+        with patch.object(hub, "is_local_dashboard_request", return_value=True), patch.object(
+            hub, "local_usb_farm", return_value=fake
+        ), patch.object(hub, "approved_agent_apk", return_value=Path(__file__)):
+            activity = self.client.get("/dashboard/activity")
+            self.assertEqual(200, activity.status_code)
+            self.assertTrue(activity.json()["local_control"])
+            self.assertEqual("usb-1", activity.json()["usb_devices"][0]["serial"])
+            result = self.client.post(
+                "/dashboard/devices/usb-1/action",
+                json={"action": "restart"},
+            )
+            bulk = self.client.post("/dashboard/devices/action", json={"action": "start"})
+            diagnostics = self.client.get("/dashboard/devices/usb-1/diagnostics")
+            installed = self.client.post("/dashboard/devices/usb-1/install")
+            paired = self.client.post("/dashboard/devices/usb-1/pair")
+            recovered = self.client.post("/dashboard/reconcile")
+            activity_after = self.client.get("/dashboard/activity")
+        self.assertEqual(200, result.status_code)
+        self.assertIn(("usb-1", "restart"), fake.actions)
+        self.assertTrue(result.json()["agent_running"])
+        self.assertEqual(200, bulk.status_code)
+        self.assertEqual(1, bulk.json()["total"])
+        self.assertEqual(1, bulk.json()["ready"])
+        self.assertIn(("usb-1", "start"), fake.actions)
+        self.assertEqual(200, diagnostics.status_code)
+        self.assertEqual(73, diagnostics.json()["battery_percent"])
+        self.assertTrue(diagnostics.json()["accessibility_ready"])
+        self.assertEqual(200, installed.status_code)
+        self.assertTrue(installed.json()["installed"])
+        self.assertEqual(200, paired.status_code)
+        self.assertTrue(paired.json()["paired"])
+        self.assertRegex(fake.paired[1], r"^[A-Z2-9]{8}$")
+        self.assertEqual(200, recovered.status_code)
+        self.assertEqual(0, recovered.json()["leases_expired"])
+        system_messages = [
+            event["message"] for event in activity_after.json()["events"]
+            if event["target"] == "system"
+        ]
+        self.assertTrue(any("Массовая команда" in message for message in system_messages))
+        self.assertTrue(any("Восстановление очереди" in message for message in system_messages))
+
+    def test_approved_agent_apk_requires_exact_sha256(self):
+        apk = TEST_TEMP_ROOT / "controller-agent.apk"
+        apk.write_bytes(b"signed-apk-fixture")
+        expected = hub.hashlib.sha256(apk.read_bytes()).hexdigest()
+        with patch.dict(
+            os.environ,
+            {"FARM_AGENT_APK": str(apk), "FARM_AGENT_APK_SHA256": "0" * 64},
+        ):
+            self.assertIsNone(hub.approved_agent_apk())
+        with patch.dict(
+            os.environ,
+            {"FARM_AGENT_APK": str(apk), "FARM_AGENT_APK_SHA256": expected},
+        ):
+            self.assertEqual(apk.resolve(), hub.approved_agent_apk())
+
+    def test_usb_pairing_code_is_local_one_time_and_never_persisted_plaintext(self):
+        with hub.database(write=True) as db:
+            code, _ = hub.create_pairing_code(db, hub.now())
+        with patch.object(hub, "is_local_dashboard_request", return_value=True):
+            first = self.client.post(
+                "/devices/pair",
+                json={"code": code, "device_id": "android-agent-new", "device_label": "Phone 2"},
+            )
+            replay = self.client.post(
+                "/devices/pair",
+                json={"code": code, "device_id": "android-agent-new", "device_label": "Phone 2"},
+            )
+        self.assertEqual(200, first.status_code)
+        self.assertEqual(os.environ["HUB_RUNNER_TOKEN"], first.json()["runner_token"])
+        self.assertEqual(409, replay.status_code)
+        with hub.database(write=False) as db:
+            row = db.execute("SELECT code_hash,used_at,device_id FROM device_pairing_codes").fetchone()
+            self.assertNotEqual(code, row["code_hash"])
+            self.assertIsNotNone(row["used_at"])
+            self.assertEqual("android-agent-new", row["device_id"])
+
     def test_job_is_claimed_only_by_eligible_registered_device(self):
         created = self.create_job()
         self.assertEqual(created.status_code, 201)
@@ -204,6 +330,29 @@ class HubFlowTest(unittest.TestCase):
             headers={**self.runner_headers, "X-Lease-Token": "stale-token-000000"},
         )
         self.assertEqual(stale.status_code, 409)
+
+    def test_background_reconcile_cycle_recovers_expired_lease_without_request(self):
+        self.register_device()
+        created = self.create_job(key="background-reconcile-job")
+        claimed = self.claim().json()["job"]
+        with hub.database() as db:
+            db.execute(
+                "UPDATE jobs SET lease_expires_at=? WHERE job_id=?",
+                ("2000-01-01T00:00:00+00:00", created.json()["job_id"]),
+            )
+
+        counts = hub.run_reconcile_cycle()
+
+        self.assertEqual(counts["leases_expired"], 1)
+        detail = self.job_detail(claimed["job_id"])["job"]
+        self.assertEqual(detail["status"], "retry_wait")
+        self.assertIsNone(detail["lease_expires_at"])
+        with hub.database() as db:
+            event = db.execute(
+                "SELECT category,message,payload_json FROM controller_events ORDER BY controller_event_id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(event["category"], "watchdog")
+        self.assertIn("leases_expired", event["payload_json"])
 
     def test_expired_lease_retries_then_dead_letters_at_max_attempts(self):
         job_id = self.create_job(key="lease-recovery-job", max_attempts=2).json()["job_id"]
@@ -1598,6 +1747,58 @@ class HubFlowTest(unittest.TestCase):
         target_schema = self.client.get("/openapi.json").json()["components"]["schemas"]["JobCreate"]["properties"]["target"]
         self.assertIn("youtube_short", target_schema["enum"])
 
+    def test_content_hash_prevents_accidental_duplicate_and_allows_explicit_repost(self):
+        media_hash = "a" * 64
+        first = self.create_job(
+            key="dedupe-first-0001", target="youtube_short", content_sha256=media_hash
+        )
+        self.assertEqual(first.status_code, 201)
+        duplicate = self.create_job(
+            key="dedupe-second-0002", target="youtube_short", content_sha256=media_hash
+        )
+        self.assertEqual(duplicate.status_code, 201)
+        self.assertTrue(duplicate.json()["duplicate_prevented"])
+        self.assertEqual(duplicate.json()["job_id"], first.json()["job_id"])
+        repost = self.create_job(
+            key="dedupe-repost-0003",
+            target="youtube_short",
+            content_sha256=media_hash,
+            allow_duplicate=True,
+        )
+        self.assertEqual(repost.status_code, 201)
+        self.assertFalse(repost.json()["duplicate_prevented"])
+        self.assertNotEqual(repost.json()["job_id"], first.json()["job_id"])
+
+    def test_priority_orders_ready_jobs_and_dashboard_controls_waiting_job(self):
+        self.register_device()
+        low = self.create_job(key="priority-low-0001", priority=10)
+        high = self.create_job(key="priority-high-0002", priority=90)
+        self.assertEqual(low.status_code, 201)
+        self.assertEqual(high.status_code, 201)
+        claimed = self.claim().json()["job"]
+        self.assertEqual(claimed["job_id"], high.json()["job_id"])
+        self.assertEqual(claimed["priority"], 90)
+
+        login = self.client.post(
+            "/dashboard/session", json={"token": os.environ["HUB_ADMIN_TOKEN"]}
+        )
+        self.assertEqual(login.status_code, 200)
+        low_id = low.json()["job_id"]
+        paused = self.client.post(
+            f"/dashboard/jobs/{low_id}/action", json={"action": "pause"}
+        )
+        self.assertEqual(paused.status_code, 200)
+        self.assertEqual(paused.json()["status"], "paused")
+        resumed = self.client.post(
+            f"/dashboard/jobs/{low_id}/action", json={"action": "resume"}
+        )
+        self.assertEqual(resumed.status_code, 200)
+        self.assertEqual(resumed.json()["status"], "pending")
+        activity = self.client.get("/dashboard/activity").json()
+        displayed = next(item for item in activity["jobs"] if item["job_id"] == low_id)
+        self.assertEqual(displayed["stage_label"], "Ожидает запуска")
+        self.assertIn("success_rate", activity["metrics"])
+
 
 class MigrationTest(unittest.TestCase):
     def test_additive_migration_preserves_legacy_job(self):
@@ -1642,6 +1843,8 @@ class MigrationTest(unittest.TestCase):
             self.assertIn("lease_expires_at", columns)
             self.assertIn("idempotency_key", columns)
             self.assertIn("attempt_count", columns)
+            self.assertIn("priority", columns)
+            self.assertIn("content_sha256", columns)
             self.assertEqual(legacy["caption"], "legacy")
             self.assertEqual(legacy["status"], "pending")
             self.assertIsNotNone(evidence_table)

@@ -107,6 +107,13 @@
             android:text="@string/start_agent" />
 
         <Button
+            android:id="@+id/stopAgentButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/stop_agent" />
+
+        <Button
             android:id="@+id/allowScreenCaptureButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

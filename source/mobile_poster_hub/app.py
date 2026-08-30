@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
+import re
+import secrets
+import shutil
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
@@ -19,6 +24,8 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, HttpUrl
 
+from usb_farm import DeviceState, UsbFarm
+
 
 DATA_DIR = Path(os.environ.get("HUB_DATA_DIR", Path(__file__).with_name("data"))).resolve()
 DATABASE_PATH = DATA_DIR / "hub.sqlite3"
@@ -27,10 +34,12 @@ QUEUE_MEDIA_DIR = Path(os.environ.get("FARM_QUEUE_MEDIA_DIR", DATA_DIR / "queue-
 RUNNER_TOKEN = os.environ.get("HUB_RUNNER_TOKEN", "")
 ADMIN_TOKEN = os.environ.get("HUB_ADMIN_TOKEN", "")
 DASHBOARD_PATH = Path(__file__).with_name("dashboard.html")
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
 LEASE_SECONDS = int(os.environ.get("HUB_LEASE_SECONDS", "900"))
 RETRY_BASE_SECONDS = int(os.environ.get("HUB_RETRY_BASE_SECONDS", "30"))
 RETRY_MAX_SECONDS = int(os.environ.get("HUB_RETRY_MAX_SECONDS", "3600"))
+RECONCILE_INTERVAL_SECONDS = max(5, int(os.environ.get("HUB_RECONCILE_INTERVAL_SECONDS", "10")))
 TERMINAL_STATUSES = {"succeeded", "ready_to_publish", "needs_review", "dead_letter"}
 ACTIVE_STATUSES = {"claimed", "running"}
 ALLOWED_DEVICE_TRANSITIONS = {
@@ -43,7 +52,25 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
 QUEUE_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Mobile Poster Hub", version="0.2.0")
+async def reconcile_forever() -> None:
+    while True:
+        await asyncio.sleep(RECONCILE_INTERVAL_SECONDS)
+        run_reconcile_cycle()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    startup()
+    reconciler = asyncio.create_task(reconcile_forever(), name="hub-lease-reconciler")
+    try:
+        yield
+    finally:
+        reconciler.cancel()
+        with suppress(asyncio.CancelledError):
+            await reconciler
+
+
+app = FastAPI(title="Mobile Poster Hub", version="0.2.0", lifespan=lifespan)
 runner_token_header = APIKeyHeader(
     name="X-Hub-Token",
     scheme_name="RunnerToken",
@@ -70,6 +97,21 @@ class DeviceRegistration(BaseModel):
 
 class DashboardLogin(BaseModel):
     token: str = Field(min_length=1, max_length=500)
+
+
+class DashboardDeviceControl(BaseModel):
+    action: Literal["start", "stop", "restart"]
+
+
+class DashboardJobControl(BaseModel):
+    action: Literal["pause", "resume", "cancel", "retry", "set_priority"]
+    priority: int | None = Field(default=None, ge=0, le=100)
+
+
+class DevicePairingClaim(BaseModel):
+    code: str = Field(min_length=8, max_length=16, pattern=r"^[A-Z2-9]+$")
+    device_id: str = Field(min_length=3, max_length=120)
+    device_label: str = Field(min_length=1, max_length=120)
 
 
 DRY_RUN_TARGETS = frozenset({
@@ -117,6 +159,15 @@ class JobCreate(BaseModel):
         max_length=120,
         description="Exact visible Instagram/TikTok account identity; separate from device routing account_label.",
     )
+    priority: int = Field(default=50, ge=0, le=100)
+    content_sha256: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="SHA-256 of the exact media bytes, used for duplicate protection.",
+    )
+    allow_duplicate: bool = False
     max_attempts: int = Field(default=5, ge=1, le=20)
 
 
@@ -137,6 +188,11 @@ class DeviceJobCreate(BaseModel):
     media_url: HttpUrl
     publish_at: datetime | None = None
     platform_account_label: str | None = Field(default=None, max_length=120)
+    priority: int = Field(default=50, ge=0, le=100)
+    content_sha256: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$"
+    )
+    allow_duplicate: bool = False
 
 
 class JobStatusUpdate(BaseModel):
@@ -268,6 +324,9 @@ def initialize_database() -> None:
                 "completed_at": "TEXT",
                 "publication_id": "TEXT",
                 "platform_account_label": "TEXT",
+                "priority": "INTEGER NOT NULL DEFAULT 50",
+                "content_sha256": "TEXT",
+                "allow_duplicate": "INTEGER NOT NULL DEFAULT 0",
             },
         )
         ensure_columns(
@@ -294,8 +353,31 @@ def initialize_database() -> None:
               created_at TEXT NOT NULL
             )"""
         )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS controller_events (
+              controller_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL, level TEXT NOT NULL,
+              category TEXT NOT NULL, message TEXT NOT NULL,
+              payload_json TEXT NOT NULL
+            )"""
+        )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS device_pairing_codes (
+              code_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+              expires_at TEXT NOT NULL, used_at TEXT, device_id TEXT
+            )"""
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_controller_events_created ON controller_events(created_at)"
+        )
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency ON jobs(idempotency_key) WHERE idempotency_key IS NOT NULL")
         db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_dispatch ON jobs(status,next_retry_at,publish_at,created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_priority_dispatch ON jobs(status,publish_at,priority DESC,created_at)")
+        db.execute(
+            """CREATE INDEX IF NOT EXISTS idx_jobs_content_dedupe
+               ON jobs(target,content_sha256,account_label,platform_account_label,created_at)
+               WHERE content_sha256 IS NOT NULL"""
+        )
         db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(status,lease_expires_at)")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_key ON events(job_id,event_key) WHERE event_key IS NOT NULL")
         db.execute(
@@ -312,7 +394,6 @@ def initialize_database() -> None:
         reconcile_jobs(db, now())
 
 
-@app.on_event("startup")
 def startup() -> None:
     if len(RUNNER_TOKEN) < 24 or len(ADMIN_TOKEN) < 24 or hmac.compare_digest(RUNNER_TOKEN, ADMIN_TOKEN):
         raise RuntimeError("Set distinct HUB_RUNNER_TOKEN and HUB_ADMIN_TOKEN values of at least 24 characters")
@@ -374,6 +455,35 @@ def job_payload(row: sqlite3.Row) -> dict:
 
 def admin_job_payload(row: sqlite3.Row) -> dict:
     return {key: row[key] for key in row.keys() if key not in {"payload_fingerprint", "lease_token"}}
+
+
+def job_stage(status: str, last_message: str | None = None) -> tuple[str, str]:
+    message = (last_message or "").lower()
+    if status == "succeeded":
+        return "published", "Опубликовано и подтверждено"
+    if status == "ready_to_publish":
+        return "ready", "Готово к финальной публикации"
+    if status == "needs_review":
+        return "review", "Нужна проверка"
+    if status in {"dead_letter", "failed"}:
+        return "failed", "Остановлено после ошибки"
+    if status == "cancelled":
+        return "cancelled", "Отменено"
+    if status == "paused":
+        return "paused", "Приостановлено"
+    if status in {"pending", "retry_wait"}:
+        return ("scheduled", "Ожидает запуска") if status == "pending" else ("retry", "Ожидает повтор")
+    if any(token in message for token in ("publication", "publish", "post-confirm", "receipt")):
+        return "confirming", "Проверяем публикацию"
+    if any(token in message for token in ("editor", "composer", "caption", "title")):
+        return "editing", "Заполняем публикацию"
+    if any(token in message for token in ("media", "gallery", "picker", "prepared")):
+        return "media", "Выбираем материал"
+    if any(token in message for token in ("launch", "share", "started publish")):
+        return "opening", "Открываем соцсеть"
+    if status in {"claimed", "running"}:
+        return "starting", "Телефон принял задание"
+    return status, "Состояние обновляется"
 
 
 def require_job_ownership(
@@ -476,6 +586,57 @@ def reconcile_jobs(db: sqlite3.Connection, timestamp: str) -> dict[str, int]:
     return counts
 
 
+def run_reconcile_cycle() -> dict[str, int]:
+    """Persist lease/retry recovery even when no device or dashboard is polling."""
+    timestamp = now()
+    with database() as db:
+        counts = reconcile_jobs(db, timestamp)
+        if any(counts.values()):
+            insert_controller_event(
+                db,
+                "warning" if counts["leases_expired"] else "info",
+                "watchdog",
+                "Фоновое восстановление очереди выполнено",
+                counts,
+            )
+    return counts
+
+
+def insert_controller_event(
+    db: sqlite3.Connection,
+    level: str,
+    category: str,
+    message: str,
+    payload: dict | None = None,
+) -> None:
+    db.execute(
+        """INSERT INTO controller_events(created_at,level,category,message,payload_json)
+           VALUES(?,?,?,?,?)""",
+        (now(), level, category, message, canonical_json(payload or {})),
+    )
+
+
+def pairing_code_hash(code: str) -> str:
+    return hmac.new(ADMIN_TOKEN.encode(), code.encode(), hashlib.sha256).hexdigest()
+
+
+def create_pairing_code(db: sqlite3.Connection, timestamp: str) -> tuple[str, str]:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    expires_at = add_seconds(timestamp, 600)
+    for _ in range(8):
+        code = "".join(secrets.choice(alphabet) for _ in range(8))
+        try:
+            db.execute(
+                """INSERT INTO device_pairing_codes(code_hash,created_at,expires_at)
+                   VALUES(?,?,?)""",
+                (pairing_code_hash(code), timestamp, expires_at),
+            )
+            return code, expires_at
+        except sqlite3.IntegrityError:
+            continue
+    raise HTTPException(status_code=503, detail="Could not allocate a pairing code")
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -496,6 +657,62 @@ def dashboard_auth(
         dashboard_session, dashboard_cookie_value()
     ):
         raise HTTPException(status_code=401, detail="Dashboard login is required")
+
+
+def is_local_dashboard_request(request: Request) -> bool:
+    hostname = (request.url.hostname or "").lower()
+    client_host = request.client.host if request.client else ""
+    try:
+        client_is_loopback = ipaddress.ip_address(client_host).is_loopback
+    except ValueError:
+        client_is_loopback = False
+    return hostname in {"127.0.0.1", "localhost", "::1"} and client_is_loopback
+
+
+def local_usb_farm() -> UsbFarm | None:
+    configured = os.environ.get("FARM_ADB_PATH", "").strip()
+    adb_path = configured or shutil.which("adb") or ""
+    if not adb_path or not Path(adb_path).is_file():
+        return None
+    return UsbFarm(adb_path, port=18082)
+
+
+def approved_agent_apk() -> Path | None:
+    def matches(candidate: Path, expected: str) -> bool:
+        if not candidate.is_file() or candidate.suffix.lower() != ".apk":
+            return False
+        digest = hashlib.sha256()
+        with candidate.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return hmac.compare_digest(digest.hexdigest().lower(), expected.lower())
+
+    configured = os.environ.get("FARM_AGENT_APK", "").strip()
+    if configured:
+        candidate = Path(configured).resolve()
+        expected = os.environ.get("FARM_AGENT_APK_SHA256", "").strip()
+        return candidate if re.fullmatch(r"[0-9a-fA-F]{64}", expected) and matches(candidate, expected) else None
+    handoff = WORKSPACE_ROOT / "artifacts" / "runtime-smoke" / "apk"
+    candidates = sorted(
+        [
+            *handoff.glob("mobile-poster-agent-controller-pairing-*.apk"),
+            *handoff.glob("mobile-poster-agent-usb-control-*.apk"),
+        ],
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for candidate in candidates:
+        digest = re.search(r"-([0-9A-Fa-f]{64})\.apk$", candidate.name)
+        if digest and matches(candidate, digest.group(1)):
+            return candidate.resolve()
+    return None
+
+
+def local_usb_devices() -> list[dict]:
+    farm = local_usb_farm()
+    if farm is None:
+        return []
+    return [vars(device) for device in farm.inspect_many(farm.devices())]
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -545,12 +762,17 @@ def dashboard_logout(response: Response) -> dict:
 
 
 @app.get("/dashboard/activity", dependencies=[Depends(dashboard_auth)])
-def dashboard_activity() -> dict:
+def dashboard_activity(request: Request) -> dict:
     with database(write=False) as db:
         jobs = db.execute(
-            """SELECT job_id,target,status,attempt_count,max_attempts,status_message,
-                      created_at,updated_at,completed_at,publication_id
-                 FROM jobs ORDER BY created_at DESC LIMIT 150"""
+            """SELECT j.job_id,j.target,j.status,j.attempt_count,j.max_attempts,j.status_message,
+                      j.created_at,j.updated_at,j.completed_at,j.publication_id,
+                      j.assigned_device_id,j.preferred_device_id,j.account_label,
+                      j.heartbeat_at,j.lease_expires_at,j.last_error_code,j.priority,j.publish_at,
+                      j.content_sha256,j.allow_duplicate,
+                      (SELECT MAX(e.created_at) FROM events e WHERE e.job_id=j.job_id) AS last_progress_at,
+                      (SELECT e.message FROM events e WHERE e.job_id=j.job_id ORDER BY e.event_id DESC LIMIT 1) AS last_event_message
+                 FROM jobs j ORDER BY j.created_at DESC LIMIT 150"""
         ).fetchall()
         events = db.execute(
             """SELECT e.event_id,e.job_id,e.created_at,e.level,e.message,e.attempt_number,
@@ -558,29 +780,287 @@ def dashboard_activity() -> dict:
                  FROM events e JOIN jobs j ON j.job_id=e.job_id
                 ORDER BY e.event_id DESC LIMIT 300"""
         ).fetchall()
+        controller_events = db.execute(
+            """SELECT controller_event_id,created_at,level,category,message
+                 FROM controller_events ORDER BY controller_event_id DESC LIMIT 100"""
+        ).fetchall()
         status_counts = {
             row["status"]: row["count"]
             for row in db.execute(
                 "SELECT status,COUNT(*) AS count FROM jobs GROUP BY status"
             ).fetchall()
         }
+        metric_row = db.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                      SUM(CASE WHEN status IN ('needs_review','dead_letter','failed') THEN 1 ELSE 0 END) AS attention,
+                      AVG(CASE WHEN completed_at IS NOT NULL
+                          THEN (julianday(completed_at)-julianday(created_at))*86400 END) AS avg_duration_seconds
+                 FROM jobs"""
+        ).fetchone()
         devices = db.execute(
-            """SELECT device_id,label,automation_state,last_seen_at
+            """SELECT device_id,label,account_label,tags_json,notes,
+                      automation_state,last_seen_at
                  FROM devices ORDER BY last_seen_at DESC"""
         ).fetchall()
     return {
         "generated_at": now(),
+        "local_control": is_local_dashboard_request(request),
+        "usb_devices": local_usb_devices() if is_local_dashboard_request(request) else [],
         "status_counts": status_counts,
-        "devices": [dict(row) for row in devices],
-        "jobs": [dict(row) for row in jobs],
-        "events": [
+        "devices": [
+            {
+                **{key: row[key] for key in row.keys() if key != "tags_json"},
+                "tags": json.loads(row["tags_json"] or "[]"),
+            }
+            for row in devices
+        ],
+        "jobs": [
+            {
+                **dict(row),
+                "stage": job_stage(row["status"], row["last_event_message"])[0],
+                "stage_label": job_stage(row["status"], row["last_event_message"])[1],
+            }
+            for row in jobs
+        ],
+        "metrics": {
+            "total": metric_row["total"] or 0,
+            "succeeded": metric_row["succeeded"] or 0,
+            "attention": metric_row["attention"] or 0,
+            "success_rate": round(((metric_row["succeeded"] or 0) / max(metric_row["total"] or 0, 1)) * 100, 1),
+            "avg_duration_seconds": round(metric_row["avg_duration_seconds"] or 0, 1),
+        },
+        "events": sorted([
             {
                 **{key: row[key] for key in row.keys() if key != "screenshot_path"},
                 "has_screenshot": bool(row["screenshot_path"]),
             }
             for row in events
-        ],
+        ] + [
+            {
+                "event_id": f"S{row['controller_event_id']}",
+                "job_id": "system",
+                "created_at": row["created_at"],
+                "level": row["level"],
+                "message": row["message"],
+                "attempt_number": 0,
+                "target": "system",
+                "status": row["category"],
+                "has_screenshot": False,
+            }
+            for row in controller_events
+        ], key=lambda item: item["created_at"], reverse=True)[:300],
     }
+
+
+@app.post("/dashboard/jobs/{job_id}/action", dependencies=[Depends(dashboard_auth)])
+def dashboard_job_action(job_id: str, control: DashboardJobControl) -> dict:
+    timestamp = now()
+    with database(write=True) as db:
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        if job is None:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        status = job["status"]
+        target_status = status
+        message = job["status_message"]
+        if control.action == "set_priority":
+            if control.priority is None:
+                raise HTTPException(status_code=422, detail="Укажите приоритет")
+            db.execute("UPDATE jobs SET priority=?,updated_at=? WHERE job_id=?", (control.priority, timestamp, job_id))
+            message = f"Приоритет изменён на {control.priority}"
+        elif control.action == "pause":
+            if status not in {"pending", "retry_wait"}:
+                raise HTTPException(status_code=409, detail="Можно приостановить только ожидающее задание")
+            target_status, message = "paused", "Приостановлено оператором"
+        elif control.action == "resume":
+            if status != "paused":
+                raise HTTPException(status_code=409, detail="Задание не приостановлено")
+            target_status, message = "pending", "Возвращено в очередь оператором"
+        elif control.action == "cancel":
+            if status in {"claimed", "running"}:
+                raise HTTPException(status_code=409, detail="Сначала дождитесь безопасной остановки активной попытки")
+            if status in {"succeeded", "cancelled"}:
+                raise HTTPException(status_code=409, detail="Это задание уже завершено")
+            target_status, message = "cancelled", "Отменено оператором"
+        elif control.action == "retry":
+            if status not in {"needs_review", "dead_letter", "failed"}:
+                raise HTTPException(status_code=409, detail="Повтор доступен только для остановленного задания")
+            target_status, message = "pending", "Возвращено на повтор оператором"
+            next_max = max(job["max_attempts"], job["attempt_count"] + 1)
+            db.execute("UPDATE jobs SET max_attempts=? WHERE job_id=?", (next_max, job_id))
+        if target_status != status:
+            db.execute(
+                """UPDATE jobs SET status=?,status_message=?,assigned_device_id=NULL,
+                          lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL,next_retry_at=NULL,
+                          last_error_code=NULL,completed_at=NULL,updated_at=? WHERE job_id=?""",
+                (target_status, message, timestamp, job_id),
+            )
+        insert_event(
+            db, job_id, "warning", "operator_action",
+            {"action": control.action, "from_status": status, "to_status": target_status, "priority": control.priority},
+            None, job["attempt_count"], f"operator:{control.action}:{uuid.uuid4().hex}",
+        )
+        insert_controller_event(db, "warning", "job_control", message or control.action, {"job_id": job_id})
+        updated = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    return admin_job_payload(updated)
+
+
+@app.post("/dashboard/devices/{serial}/action", dependencies=[Depends(dashboard_auth)])
+def dashboard_device_action(serial: str, control: DashboardDeviceControl, request: Request) -> dict:
+    if not is_local_dashboard_request(request):
+        raise HTTPException(status_code=403, detail="USB device control is local-only")
+    farm = local_usb_farm()
+    if farm is None:
+        raise HTTPException(status_code=503, detail="ADB is unavailable")
+    connected = {device.serial: device for device in farm.devices()}
+    device = connected.get(serial)
+    if device is None:
+        raise HTTPException(status_code=404, detail="USB device is not connected")
+    result = farm.control(device, control.action)
+    with database(write=True) as db:
+        insert_controller_event(
+            db,
+            "info" if result.agent_running or control.action == "stop" else "warning",
+            "device_control",
+            f"USB-телефон {serial}: {control.action} — {result.message}",
+            {"serial": serial, "action": control.action, "ready": result.agent_running and result.accessibility_ready},
+        )
+    return vars(result)
+
+
+@app.get("/dashboard/devices/{serial}/diagnostics", dependencies=[Depends(dashboard_auth)])
+def dashboard_device_diagnostics(serial: str, request: Request) -> dict:
+    if not is_local_dashboard_request(request):
+        raise HTTPException(status_code=403, detail="USB device diagnostics are local-only")
+    farm = local_usb_farm()
+    if farm is None:
+        raise HTTPException(status_code=503, detail="ADB is unavailable")
+    connected = {device.serial: device for device in farm.devices()}
+    device = connected.get(serial)
+    if device is None:
+        raise HTTPException(status_code=404, detail="USB device is not connected")
+    return vars(farm.diagnose(device))
+
+
+@app.post("/dashboard/devices/{serial}/install", dependencies=[Depends(dashboard_auth)])
+def dashboard_device_install(serial: str, request: Request) -> dict:
+    if not is_local_dashboard_request(request):
+        raise HTTPException(status_code=403, detail="USB agent installation is local-only")
+    farm = local_usb_farm()
+    apk = approved_agent_apk()
+    if farm is None or apk is None:
+        raise HTTPException(status_code=503, detail="Approved agent APK is unavailable")
+    connected = {device.serial: device for device in farm.devices()}
+    device = connected.get(serial)
+    if device is None:
+        raise HTTPException(status_code=404, detail="USB device is not connected")
+    result = farm.install_agent(device, apk)
+    with database(write=True) as db:
+        insert_controller_event(
+            db,
+            "info" if result["installed"] else "warning",
+            "agent_install",
+            f"USB-телефон {serial}: {result['message']}",
+            {"serial": serial, "installed": result["installed"], "apk": apk.name},
+        )
+    return result
+
+
+@app.post("/dashboard/devices/{serial}/pair", dependencies=[Depends(dashboard_auth)])
+def dashboard_device_pair(serial: str, request: Request) -> dict:
+    if not is_local_dashboard_request(request):
+        raise HTTPException(status_code=403, detail="USB device pairing is local-only")
+    farm = local_usb_farm()
+    if farm is None:
+        raise HTTPException(status_code=503, detail="ADB is unavailable")
+    connected = {device.serial: device for device in farm.devices()}
+    device = connected.get(serial)
+    if device is None:
+        raise HTTPException(status_code=404, detail="USB device is not connected")
+    with database(write=True) as db:
+        code, expires_at = create_pairing_code(db, now())
+    result = farm.pair_agent(device, code)
+    with database(write=True) as db:
+        insert_controller_event(
+            db,
+            "info" if result["paired"] else "warning",
+            "device_pairing",
+            f"USB-телефон {serial}: {result['message']}",
+            {"serial": serial, "paired": result["paired"], "expires_at": expires_at},
+        )
+    return result
+
+
+@app.post("/dashboard/devices/action", dependencies=[Depends(dashboard_auth)])
+def dashboard_all_devices_action(control: DashboardDeviceControl, request: Request) -> dict:
+    if not is_local_dashboard_request(request):
+        raise HTTPException(status_code=403, detail="USB device control is local-only")
+    farm = local_usb_farm()
+    if farm is None:
+        raise HTTPException(status_code=503, detail="ADB is unavailable")
+    connected = [device for device in farm.devices() if device.adb_state == "device"]
+    results = [vars(device) for device in farm.control_many(connected, control.action)]
+    ready = sum(1 for item in results if item["agent_running"] and item["accessibility_ready"])
+    with database(write=True) as db:
+        insert_controller_event(
+            db,
+            "info" if control.action == "stop" or ready == len(results) else "warning",
+            "fleet_control",
+            f"Массовая команда {control.action}: обработано {len(results)}, полностью готово {ready}",
+            {"action": control.action, "total": len(results), "ready": ready},
+        )
+    return {
+        "action": control.action,
+        "total": len(results),
+        "ready": ready,
+        "devices": results,
+    }
+
+
+@app.post("/dashboard/reconcile", dependencies=[Depends(dashboard_auth)])
+def dashboard_reconcile(request: Request) -> dict:
+    if not is_local_dashboard_request(request):
+        raise HTTPException(status_code=403, detail="Queue recovery is local-only")
+    with database(write=True) as db:
+        result = reconcile_jobs(db, now())
+        insert_controller_event(
+            db,
+            "warning" if result["leases_expired"] else "info",
+            "queue_recovery",
+            (
+                f"Восстановление очереди: просрочено {result['leases_expired']}, "
+                f"возвращено {result['requeued']}, остановлено {result['dead_lettered']}"
+            ),
+            result,
+        )
+        return result
+
+
+@app.post("/devices/pair")
+def pair_device(claim: DevicePairingClaim, request: Request) -> dict:
+    if not is_local_dashboard_request(request) or not RUNNER_TOKEN:
+        raise HTTPException(status_code=403, detail="USB pairing is local-only")
+    timestamp = now()
+    digest = pairing_code_hash(claim.code)
+    with database(write=True) as db:
+        pairing = db.execute(
+            """SELECT expires_at,used_at FROM device_pairing_codes WHERE code_hash=?""",
+            (digest,),
+        ).fetchone()
+        if pairing is None or pairing["used_at"] is not None or pairing["expires_at"] < timestamp:
+            raise HTTPException(status_code=409, detail="Pairing code is invalid or expired")
+        db.execute(
+            "UPDATE device_pairing_codes SET used_at=?,device_id=? WHERE code_hash=? AND used_at IS NULL",
+            (timestamp, claim.device_id, digest),
+        )
+        insert_controller_event(
+            db,
+            "info",
+            "device_pairing",
+            f"Телефон {claim.device_label} безопасно подключён к Hub",
+            {"device_id": claim.device_id, "device_label": claim.device_label},
+        )
+    return {"runner_token": RUNNER_TOKEN, "hub_url": "http://127.0.0.1:18082"}
 
 
 @app.post("/devices/register", dependencies=[Depends(runner_auth)])
@@ -616,6 +1096,7 @@ def create_job(
             raise HTTPException(status_code=422, detail="account_label is required for social dry-run targets")
         platform_account_label = platform_account_label or account_label
     fingerprint = job_fingerprint(job, account_label, platform_account_label)
+    content_sha256 = job.content_sha256.lower() if job.content_sha256 else None
     with database(write=True) as db:
         existing = db.execute(
             "SELECT job_id,status,payload_fingerprint FROM jobs WHERE idempotency_key=?", (idempotency_key,)
@@ -624,21 +1105,45 @@ def create_job(
             if existing["payload_fingerprint"] != fingerprint:
                 raise HTTPException(status_code=409, detail="Idempotency-Key was already used with a different payload")
             return {"job_id": existing["job_id"], "status": existing["status"], "idempotent_replay": True}
+        if content_sha256 and not job.allow_duplicate:
+            duplicate = db.execute(
+                """SELECT job_id,status FROM jobs
+                   WHERE target=? AND content_sha256=?
+                     AND COALESCE(account_label,'')=COALESCE(?, '')
+                     AND COALESCE(platform_account_label,'')=COALESCE(?, '')
+                     AND status NOT IN ('failed','dead_letter','cancelled')
+                   ORDER BY created_at DESC LIMIT 1""",
+                (job.target, content_sha256, account_label, platform_account_label),
+            ).fetchone()
+            if duplicate is not None:
+                return {
+                    "job_id": duplicate["job_id"],
+                    "status": duplicate["status"],
+                    "idempotent_replay": True,
+                    "duplicate_prevented": True,
+                }
         job_id = str(uuid.uuid4())
         db.execute(
             """INSERT INTO jobs(
                  job_id,target,caption,title,description,link,board,media_url,publish_at,
                  preferred_device_id,account_label,platform_account_label,assigned_device_id,status,status_message,
-                 created_at,updated_at,idempotency_key,payload_fingerprint,attempt_count,max_attempts
-               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 created_at,updated_at,idempotency_key,payload_fingerprint,attempt_count,max_attempts,
+                 priority,content_sha256,allow_duplicate
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 job_id, job.target, job.caption, job.title, job.description,
                 str(job.link) if job.link else None, job.board, str(job.media_url),
                 normalize_time(job.publish_at), job.preferred_device_id, account_label, platform_account_label,
                 None, "pending", None, timestamp, timestamp, idempotency_key, fingerprint, 0, job.max_attempts,
+                job.priority, content_sha256, 1 if job.allow_duplicate else 0,
             ),
         )
-    return {"job_id": job_id, "status": "pending", "idempotent_replay": False}
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "idempotent_replay": False,
+        "duplicate_prevented": False,
+    }
 
 
 @app.post(
@@ -675,6 +1180,9 @@ def create_device_job(
         preferred_device_id=device_id,
         account_label=account_label,
         platform_account_label=request.platform_account_label,
+        priority=request.priority,
+        content_sha256=request.content_sha256,
+        allow_duplicate=request.allow_duplicate,
         max_attempts=5,
     )
     return create_job(job, x_idempotency_key)
@@ -694,7 +1202,7 @@ def claim_next(device_id: str, x_device_id: Annotated[str | None, Header()] = No
             """SELECT * FROM jobs WHERE status='pending' AND (publish_at IS NULL OR publish_at<=?)
                AND (preferred_device_id IS NULL OR preferred_device_id=?)
                AND (account_label IS NULL OR account_label=?)
-               ORDER BY COALESCE(publish_at, created_at), created_at LIMIT 1""",
+               ORDER BY priority DESC, COALESCE(publish_at, created_at), created_at LIMIT 1""",
             (timestamp, device_id, device["account_label"]),
         ).fetchone()
         if job is None:

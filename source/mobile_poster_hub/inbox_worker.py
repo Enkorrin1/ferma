@@ -24,6 +24,7 @@ HUB_LOCAL_URL = os.environ.get("HUB_LOCAL_URL", "http://127.0.0.1:18082").rstrip
 PUBLIC_BASE_URL = os.environ.get("HUB_PUBLIC_BASE_URL", "").rstrip("/")
 ADMIN_TOKEN = os.environ.get("HUB_ADMIN_TOKEN", "")
 POLL_SECONDS = max(2, int(os.environ.get("FARM_INBOX_POLL_SECONDS", "5")))
+HEARTBEAT = Path(os.environ.get("FARM_WORKER_HEARTBEAT", DATA_DIR / "inbox-worker-heartbeat.json")).resolve()
 
 TARGETS = {
     "Pinterest": "pinterest_pin",
@@ -33,6 +34,17 @@ TARGETS = {
     "YouTube": "youtube_short",
 }
 MEDIA_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov"}
+
+
+def write_heartbeat(phase: str) -> None:
+    """Publish a secret-free liveness marker using an atomic replace."""
+    HEARTBEAT.parent.mkdir(parents=True, exist_ok=True)
+    temporary = HEARTBEAT.with_name(f".{HEARTBEAT.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps({"pid": os.getpid(), "phase": phase, "updated_unix": time.time()}),
+        encoding="utf-8",
+    )
+    os.replace(temporary, HEARTBEAT)
 
 
 def is_safe_public_base_url(value: str) -> bool:
@@ -85,6 +97,9 @@ def submit(platform: str, source: Path) -> None:
         "account_label": os.environ.get("FARM_DEVICE_ACCOUNT_LABEL") or None,
         "platform_account_label": os.environ.get(f"FARM_{platform.upper()}_ACCOUNT") or None,
         "board": os.environ.get("FARM_PINTEREST_BOARD") if platform == "Pinterest" else None,
+        "priority": int(os.environ.get(f"FARM_{platform.upper()}_PRIORITY", "50")),
+        "content_sha256": content_hash,
+        "allow_duplicate": os.environ.get("FARM_ALLOW_DUPLICATES", "0") == "1",
         "max_attempts": 5,
     }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -106,7 +121,14 @@ def submit(platform: str, source: Path) -> None:
         caption_path.replace(destination.with_suffix(".txt"))
     receipt = destination.with_name(destination.name + ".farm-job.json")
     receipt.write_text(
-        json.dumps({"job_id": result["job_id"], "platform": platform, "media": destination.name}),
+        json.dumps(
+            {
+                "job_id": result["job_id"],
+                "platform": platform,
+                "media": destination.name,
+                "duplicate_prevented": bool(result.get("duplicate_prevented")),
+            }
+        ),
         encoding="utf-8",
     )
     arrival_marker.unlink(missing_ok=True)
@@ -169,8 +191,11 @@ def scan_once() -> None:
 
 def main() -> None:
     ensure_layout()
+    write_heartbeat("started")
     while True:
+        write_heartbeat("scanning")
         scan_once()
+        write_heartbeat("idle")
         time.sleep(POLL_SECONDS)
 
 

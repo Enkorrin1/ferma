@@ -259,6 +259,18 @@ class SocialAccessibilitySnapshotTest {
         )
         assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubeOwnedChannel(channel, "@Ivanaicreator"))
         assertEquals(1, SocialAccessibilitySnapshotPolicy.youtubeVideoCount(channel))
+        val home = snapshot(
+            nodes = listOf(
+                node(text = "Home"),
+                node(text = "Shorts", path = "root/1"),
+                node(text = "Subscriptions", path = "root/2"),
+                node(text = "You", path = "root/3"),
+            ),
+            packageName = "com.google.android.youtube",
+        )
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isYouTubeHome(home))
+        assertEquals(false, SocialAccessibilitySnapshotPolicy.isYouTubeHome(home.copy(packageName = "com.android.chrome")))
+        assertEquals(false, SocialAccessibilitySnapshotPolicy.isYouTubeHome(home.copy(nodes = home.nodes.dropLast(1))))
         val draftPrompt = snapshot(
             nodes = listOf(
                 node(text = "Continue your draft video?"),
@@ -654,6 +666,130 @@ class SocialAccessibilitySnapshotTest {
     }
 
     @Test
+    fun tiktokPickerAllowsIdenticalStructuralPairDuringThumbnailGenerationChurn() {
+        val nodes = listOf(
+            node(
+                viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_MEDIA_PAGER_VIEW_ID,
+                bounds = "[0,241][720,1324]",
+                path = "root/0",
+            ),
+            node(
+                viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_MEDIA_TILE_VIEW_ID_CURRENT,
+                bounds = SocialAccessibilitySnapshotPolicy.TIKTOK_FIRST_MEDIA_TILE_BOUNDS,
+                path = "root/1",
+            ),
+            node(
+                text = "Next (1)",
+                viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_MEDIA_NEXT_VIEW_ID_CURRENT,
+                bounds = SocialAccessibilitySnapshotPolicy.TIKTOK_MEDIA_NEXT_BOUNDS,
+                path = "root/2",
+            ),
+        )
+        val first = snapshot(
+            nodes,
+            packageName = "com.zhiliaoapp.musically",
+            before = 10,
+            after = 11,
+            fingerprint = "same-picker-tree",
+        )
+        val second = first.copy(generationBefore = 12, generationAfter = 13)
+
+        assertEquals(false, SocialAccessibilitySnapshotPolicy.isCalibratedTikTokFirstVideoPicker(first))
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isStableTikTokFirstVideoPickerPair(first, second))
+        assertEquals(
+            SocialAccessibilitySnapshotPolicy.TIKTOK_MEDIA_TILE_VIEW_ID_CURRENT,
+            SocialAccessibilitySnapshotPolicy.tikTokFirstMediaTileViewId(second),
+        )
+        assertEquals(
+            SocialAccessibilitySnapshotPolicy.TIKTOK_MEDIA_NEXT_VIEW_ID_CURRENT,
+            SocialAccessibilitySnapshotPolicy.tikTokMediaNextViewId(second),
+        )
+        assertEquals(
+            true,
+            SocialAccessibilitySnapshotPolicy.isStableTikTokFirstVideoPickerPair(
+                first,
+                second.copy(fingerprint = "different-tree"),
+            ),
+        )
+        assertEquals(
+            false,
+            SocialAccessibilitySnapshotPolicy.isStableTikTokFirstVideoPickerPair(
+                first,
+                second.copy(
+                    nodes = second.nodes.filterNot {
+                        it.viewId == SocialAccessibilitySnapshotPolicy.TIKTOK_MEDIA_TILE_VIEW_ID_CURRENT
+                    },
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun tiktokVideoEditorAcceptsCurrentExactNextId() {
+        val editor = snapshot(
+            listOf(
+                node(
+                    text = "Next",
+                    viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_EDITOR_NEXT_VIEW_ID_CURRENT,
+                    bounds = SocialAccessibilitySnapshotPolicy.TIKTOK_EDITOR_NEXT_BOUNDS,
+                    path = "root/editor-next",
+                ),
+            ),
+            packageName = "com.zhiliaoapp.musically",
+        )
+
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isVerifiedTikTokVideoEditor(editor))
+        assertEquals(
+            SocialAccessibilitySnapshotPolicy.TIKTOK_EDITOR_NEXT_VIEW_ID_CURRENT,
+            SocialAccessibilitySnapshotPolicy.tikTokEditorNextViewId(editor),
+        )
+    }
+
+    @Test
+    fun tiktokFinalComposerAcceptsCurrentExactIds() {
+        val composer = snapshot(
+            listOf(
+                node(
+                    text = "Add description...",
+                    viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_CAPTION_VIEW_ID_CURRENT,
+                    bounds = "[32,160][410,470]",
+                    path = "root/caption",
+                    editable = true,
+                ),
+                node(
+                    description = "Preview",
+                    viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_PREVIEW_VIEW_ID_CURRENT,
+                    bounds = "[442,160][688,458]",
+                    path = "root/preview",
+                ),
+                node(
+                    text = "Drafts",
+                    viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_DRAFTS_VIEW_ID_CURRENT,
+                    bounds = SocialAccessibilitySnapshotPolicy.TIKTOK_DRAFTS_BOUNDS,
+                    path = "root/drafts",
+                ),
+                node(
+                    text = "Post",
+                    viewId = SocialAccessibilitySnapshotPolicy.TIKTOK_POST_VIEW_ID_CURRENT,
+                    bounds = SocialAccessibilitySnapshotPolicy.TIKTOK_POST_BOUNDS,
+                    path = "root/post",
+                ),
+            ),
+            packageName = "com.zhiliaoapp.musically",
+        )
+
+        assertEquals(true, SocialAccessibilitySnapshotPolicy.isTikTokFinalComposerStructure(composer))
+        assertEquals(
+            SocialAccessibilitySnapshotPolicy.TIKTOK_CAPTION_VIEW_ID_CURRENT,
+            SocialAccessibilitySnapshotPolicy.tikTokCaptionViewId(composer),
+        )
+        assertEquals(
+            SocialAccessibilitySnapshotPolicy.TIKTOK_POST_VIEW_ID_CURRENT,
+            SocialAccessibilitySnapshotPolicy.tikTokPostViewId(composer),
+        )
+    }
+
+    @Test
     fun instagramReelPickerAcceptsArbitraryVideoDurationButNotMissingMedia() {
         val picker = snapshot(
             listOf(
@@ -664,6 +800,13 @@ class SocialAccessibilitySnapshotTest {
             ),
         )
         assertEquals(true, SocialAccessibilitySnapshotPolicy.isCalibratedInstagramReelPicker(picker))
+        assertEquals("0:37", SocialAccessibilitySnapshotPolicy.instagramUniqueVideoDurationLabel(picker))
+        assertEquals(
+            null,
+            SocialAccessibilitySnapshotPolicy.instagramUniqueVideoDurationLabel(
+                picker.copy(nodes = picker.nodes + node(text = "0:11", path = "root/other-video")),
+            ),
+        )
         assertEquals(
             false,
             SocialAccessibilitySnapshotPolicy.isCalibratedInstagramReelPicker(

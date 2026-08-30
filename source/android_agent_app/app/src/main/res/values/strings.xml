@@ -12,12 +12,14 @@
     <string name="pinterest_board_hint">Existing Pinterest board name (exact)</string>
     <string name="save_config">Save config</string>
     <string name="start_agent">Start agent</string>
+    <string name="stop_agent">Stop agent</string>
     <string name="allow_screen_capture">Allow screen capture</string>
     <string name="open_accessibility_settings">Open accessibility settings</string>
     <string name="request_notifications">Allow notifications</string>
     <string name="status_idle">Agent is idle.</string>
     <string name="status_saved">Config saved.</string>
     <string name="status_service_started">Foreground service started.</string>
+    <string name="status_service_stopped">Agent stopped. Autostart is disabled until Start agent is pressed again.</string>
     <string name="status_missing_config">Enter a valid HTTPS hub URL, token, and device label first.</string>
     <string name="status_storage_permission_needed">Allow storage access, then tap Start agent again.</string>
     <string name="status_screen_capture_granted">Screen capture permission granted.</string>

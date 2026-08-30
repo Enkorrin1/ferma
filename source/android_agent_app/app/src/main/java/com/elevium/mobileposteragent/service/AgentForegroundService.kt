@@ -497,6 +497,10 @@ class AgentForegroundService : LifecycleService() {
             }
         }
 
+        fun stop(context: Context) {
+            context.stopService(Intent(context, AgentForegroundService::class.java))
+        }
+
         fun stableDeviceId(context: Context): String {
             val prefs = context.getSharedPreferences("mobile_poster_agent", Context.MODE_PRIVATE)
             var id = prefs.getString("stable_device_id", null)

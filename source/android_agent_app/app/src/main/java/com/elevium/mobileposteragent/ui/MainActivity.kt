@@ -114,6 +114,12 @@ class MainActivity : AppCompatActivity() {
             }, 350)
         }
 
+        binding.stopAgentButton.setOnClickListener {
+            BootRecoveryCoordinator.setEnabled(this, false)
+            AgentForegroundService.stop(this)
+            binding.statusText.text = getString(R.string.status_service_stopped)
+        }
+
         binding.openAccessibilityButton.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }

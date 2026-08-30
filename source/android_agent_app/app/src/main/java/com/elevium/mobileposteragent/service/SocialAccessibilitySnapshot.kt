@@ -100,20 +100,54 @@ internal object SocialAccessibilitySnapshotPolicy {
     const val TIKTOK_PROFILE_ENTRY_BOUNDS = "[576,1326][720,1424]"
     const val TIKTOK_MEDIA_PAGER_VIEW_ID = "com.zhiliaoapp.musically:id/viewpager_choose_media"
     const val TIKTOK_MEDIA_PICKER_CLOSE_VIEW_ID = "com.zhiliaoapp.musically:id/bqo"
+    const val TIKTOK_MEDIA_PICKER_CLOSE_VIEW_ID_CURRENT = "com.zhiliaoapp.musically:id/bq7"
     const val TIKTOK_MEDIA_PICKER_CLOSE_BOUNDS = "[16,63][96,143]"
     const val TIKTOK_MEDIA_TILE_VIEW_ID = "com.zhiliaoapp.musically:id/ooy"
+    const val TIKTOK_MEDIA_TILE_VIEW_ID_CURRENT = "com.zhiliaoapp.musically:id/oo0"
     const val TIKTOK_FIRST_MEDIA_TILE_BOUNDS = "[243,245][478,483]"
     const val TIKTOK_MEDIA_NEXT_VIEW_ID = "com.zhiliaoapp.musically:id/pt2"
+    const val TIKTOK_MEDIA_NEXT_VIEW_ID_CURRENT = "com.zhiliaoapp.musically:id/pr7"
     const val TIKTOK_MEDIA_NEXT_BOUNDS = "[368,1304][688,1392]"
     const val TIKTOK_EDITOR_NEXT_VIEW_ID = "com.zhiliaoapp.musically:id/ptb"
+    const val TIKTOK_EDITOR_NEXT_VIEW_ID_CURRENT = "com.zhiliaoapp.musically:id/prf"
     const val TIKTOK_EDITOR_NEXT_BOUNDS = "[494,1336][566,1376]"
+
+    private val tikTokMediaPickerCloseViewIds = setOf(
+        TIKTOK_MEDIA_PICKER_CLOSE_VIEW_ID,
+        TIKTOK_MEDIA_PICKER_CLOSE_VIEW_ID_CURRENT,
+    )
+    private val tikTokMediaTileViewIds = setOf(
+        TIKTOK_MEDIA_TILE_VIEW_ID,
+        TIKTOK_MEDIA_TILE_VIEW_ID_CURRENT,
+    )
+    private val tikTokMediaNextViewIds = setOf(
+        TIKTOK_MEDIA_NEXT_VIEW_ID,
+        TIKTOK_MEDIA_NEXT_VIEW_ID_CURRENT,
+    )
+    private val tikTokSelectedMediaNextLabels = setOf("Next", "Next (1)", "Далее", "Далее (1)")
+    private val tikTokEditorNextViewIds = setOf(
+        TIKTOK_EDITOR_NEXT_VIEW_ID,
+        TIKTOK_EDITOR_NEXT_VIEW_ID_CURRENT,
+    )
     const val TIKTOK_CAPTION_VIEW_ID = "com.zhiliaoapp.musically:id/h3r"
+    const val TIKTOK_CAPTION_VIEW_ID_CURRENT = "com.zhiliaoapp.musically:id/h3a"
     const val TIKTOK_PREVIEW_VIEW_ID = "com.zhiliaoapp.musically:id/ksj"
+    const val TIKTOK_PREVIEW_VIEW_ID_CURRENT = "com.zhiliaoapp.musically:id/ksa"
     const val TIKTOK_PHOTO_PREVIEW_VIEW_ID = "com.zhiliaoapp.musically:id/af_"
     const val TIKTOK_DRAFTS_VIEW_ID = "com.zhiliaoapp.musically:id/gdl"
+    const val TIKTOK_DRAFTS_VIEW_ID_CURRENT = "com.zhiliaoapp.musically:id/gd8"
     const val TIKTOK_POST_VIEW_ID = "com.zhiliaoapp.musically:id/t7a"
+    const val TIKTOK_POST_VIEW_ID_CURRENT = "com.zhiliaoapp.musically:id/t6b"
     const val TIKTOK_DRAFTS_BOUNDS = "[24,1304][352,1400]"
     const val TIKTOK_POST_BOUNDS = "[368,1304][696,1400]"
+    private val tikTokCaptionViewIds = setOf(TIKTOK_CAPTION_VIEW_ID, TIKTOK_CAPTION_VIEW_ID_CURRENT)
+    private val tikTokPreviewViewIds = setOf(
+        TIKTOK_PREVIEW_VIEW_ID,
+        TIKTOK_PREVIEW_VIEW_ID_CURRENT,
+        TIKTOK_PHOTO_PREVIEW_VIEW_ID,
+    )
+    private val tikTokDraftsViewIds = setOf(TIKTOK_DRAFTS_VIEW_ID, TIKTOK_DRAFTS_VIEW_ID_CURRENT)
+    private val tikTokPostViewIds = setOf(TIKTOK_POST_VIEW_ID, TIKTOK_POST_VIEW_ID_CURRENT)
     private val productionRules = mapOf(
         SocialPlatform.INSTAGRAM to SocialAccountOwnershipRule(
             viewIds = setOf(INSTAGRAM_ACCOUNT_VIEW_ID),
@@ -361,6 +395,16 @@ internal object SocialAccessibilitySnapshotPolicy {
             }
     }
 
+    fun instagramUniqueVideoDurationLabel(snapshot: SocialAccessibilitySnapshot): String? {
+        if (!isCalibratedInstagramReelPicker(snapshot)) return null
+        return snapshot.nodes.asSequence()
+            .filter { it.visible }
+            .map { it.text.trim() }
+            .filter { Regex("\\d{1,2}:\\d{2}").matches(it) }
+            .distinct()
+            .singleOrNull()
+    }
+
     fun isInstagramDraftPrompt(snapshot: SocialAccessibilitySnapshot): Boolean {
         if (!snapshot.consistent || snapshot.packageName != "com.instagram.android") return false
         val labels = snapshot.visibleLabels().toSet()
@@ -464,8 +508,15 @@ internal object SocialAccessibilitySnapshotPolicy {
         mediaSelectedInCurrentAttempt: Boolean,
     ): Boolean {
         if (!mediaSelectedInCurrentAttempt) return false
-        if (!isThreadsComposer(snapshot, expectedAccount)) return false
+        if (!snapshot.consistent || snapshot.packageName != "com.instagram.barcelona") return false
+        if (expectedAccount.trim().removePrefix("@").trim().isBlank()) return false
         val labels = snapshot.visibleLabels().toSet()
+        // The verified account header scrolls above the visible viewport after a tall video is
+        // attached. Account ownership was already proven on Home and again on the pre-media
+        // composer in this same synchronous attempt; the final snapshot must still prove the
+        // owned composer structure, exact caption and final Post controls without requiring an
+        // off-screen header to remain visible.
+        if (!labels.contains("New thread")) return false
         // Threads removes the pre-attachment "Add to thread" affordance once a video is
         // attached. Requiring that stale label rejected the genuine final composer. Media
         // ownership is instead carried explicitly from the exact current-job gallery
@@ -501,6 +552,12 @@ internal object SocialAccessibilitySnapshotPolicy {
         val expected = expectedAccount.trim().removePrefix("@").trim()
         val normalized = snapshot.visibleLabels().map { it.trim().removePrefix("@").trim() }.toSet()
         return expected.isNotBlank() && normalized.contains(expected) && snapshot.visibleLabels().contains("View channel")
+    }
+
+    fun isYouTubeHome(snapshot: SocialAccessibilitySnapshot): Boolean {
+        if (!snapshot.consistent || snapshot.packageName != "com.google.android.youtube") return false
+        val labels = snapshot.visibleLabels().map(String::trim).toSet()
+        return setOf("Home", "Shorts", "Subscriptions", "You").all(labels::contains)
     }
 
     fun youtubeVideoCount(snapshot: SocialAccessibilitySnapshot): Int? {
@@ -622,43 +679,97 @@ internal object SocialAccessibilitySnapshotPolicy {
         }
     }
 
-    fun isCalibratedTikTokFirstVideoPicker(snapshot: SocialAccessibilitySnapshot): Boolean =
-        snapshot.consistent &&
-            snapshot.packageName == "com.zhiliaoapp.musically" &&
+    fun hasTikTokFirstVideoPickerStructure(snapshot: SocialAccessibilitySnapshot): Boolean =
+        snapshot.packageName == "com.zhiliaoapp.musically" &&
+            snapshot.generationBefore > 0L &&
+            snapshot.generationAfter > 0L &&
+            snapshot.fingerprint.isNotBlank() &&
             snapshot.nodes.any { it.visible && it.viewId == TIKTOK_MEDIA_PAGER_VIEW_ID } &&
             snapshot.nodes.count {
-                it.visible && it.viewId == TIKTOK_MEDIA_TILE_VIEW_ID &&
+                it.visible && it.viewId in tikTokMediaTileViewIds &&
                     it.bounds == TIKTOK_FIRST_MEDIA_TILE_BOUNDS
             } == 1
+
+    fun tikTokFirstMediaTileViewId(snapshot: SocialAccessibilitySnapshot): String? =
+        snapshot.nodes.singleOrNull {
+            it.visible && it.viewId in tikTokMediaTileViewIds &&
+                it.bounds == TIKTOK_FIRST_MEDIA_TILE_BOUNDS
+        }?.viewId
+
+    fun tikTokMediaNextViewId(snapshot: SocialAccessibilitySnapshot): String? =
+        snapshot.nodes.singleOrNull { node ->
+            node.visible && node.viewId in tikTokMediaNextViewIds &&
+                node.bounds == TIKTOK_MEDIA_NEXT_BOUNDS && node.text.trim() in tikTokSelectedMediaNextLabels
+        }?.viewId
+
+    fun isStableTikTokFirstVideoPickerPair(
+        previous: SocialAccessibilitySnapshot,
+        current: SocialAccessibilitySnapshot,
+    ): Boolean =
+        hasTikTokFirstVideoPickerStructure(previous) &&
+            hasTikTokFirstVideoPickerStructure(current) &&
+            tikTokPickerActionSignature(previous) == tikTokPickerActionSignature(current)
+
+    private fun tikTokPickerActionSignature(snapshot: SocialAccessibilitySnapshot): List<String> =
+        snapshot.nodes.asSequence()
+            .filter { node ->
+                node.visible && (
+                    node.viewId == TIKTOK_MEDIA_PAGER_VIEW_ID ||
+                        node.viewId in tikTokMediaTileViewIds ||
+                        node.viewId in tikTokMediaPickerCloseViewIds
+                    )
+            }
+            .map { "${it.viewId}@${it.bounds}" }
+            .sorted()
+            .toList()
+
+    fun isCalibratedTikTokFirstVideoPicker(snapshot: SocialAccessibilitySnapshot): Boolean =
+        snapshot.consistent &&
+            hasTikTokFirstVideoPickerStructure(snapshot)
 
     fun isVerifiedTikTokSelectedVideoPreview(snapshot: SocialAccessibilitySnapshot): Boolean =
         snapshot.consistent && snapshot.packageName == "com.zhiliaoapp.musically" &&
             snapshot.nodes.count { node ->
-                node.visible && node.viewId == TIKTOK_MEDIA_NEXT_VIEW_ID &&
-                    node.bounds == TIKTOK_MEDIA_NEXT_BOUNDS && node.text.trim() == "Next"
+                node.visible && node.viewId in tikTokMediaNextViewIds &&
+                    node.bounds == TIKTOK_MEDIA_NEXT_BOUNDS && node.text.trim() in tikTokSelectedMediaNextLabels
             } == 1
 
     fun isVerifiedTikTokVideoEditor(snapshot: SocialAccessibilitySnapshot): Boolean =
         snapshot.consistent && snapshot.packageName == "com.zhiliaoapp.musically" &&
             snapshot.nodes.count { node ->
-                node.visible && node.viewId == TIKTOK_EDITOR_NEXT_VIEW_ID &&
+                node.visible && node.viewId in tikTokEditorNextViewIds &&
                     node.bounds == TIKTOK_EDITOR_NEXT_BOUNDS && node.text.trim() == "Next"
             } == 1
 
+    fun tikTokEditorNextViewId(snapshot: SocialAccessibilitySnapshot): String? =
+        snapshot.nodes.singleOrNull { node ->
+            node.visible && node.viewId in tikTokEditorNextViewIds &&
+                node.bounds == TIKTOK_EDITOR_NEXT_BOUNDS && node.text.trim() == "Next"
+        }?.viewId
+
     fun isTikTokFinalComposerStructure(snapshot: SocialAccessibilitySnapshot): Boolean =
         snapshot.consistent && snapshot.packageName == "com.zhiliaoapp.musically" &&
-            snapshot.nodes.count { it.visible && it.editable && it.viewId == TIKTOK_CAPTION_VIEW_ID } == 1 &&
+            snapshot.nodes.count { it.visible && it.editable && it.viewId in tikTokCaptionViewIds } == 1 &&
           snapshot.nodes.count {
-              it.visible && it.viewId in setOf(TIKTOK_PREVIEW_VIEW_ID, TIKTOK_PHOTO_PREVIEW_VIEW_ID)
+              it.visible && it.viewId in tikTokPreviewViewIds
           } == 1 &&
             snapshot.nodes.count { node ->
-                node.visible && node.viewId == TIKTOK_DRAFTS_VIEW_ID &&
+                node.visible && node.viewId in tikTokDraftsViewIds &&
                     node.bounds == TIKTOK_DRAFTS_BOUNDS && node.text.trim() == "Drafts"
             } == 1 &&
             snapshot.nodes.count { node ->
-                node.visible && node.viewId == TIKTOK_POST_VIEW_ID &&
+                node.visible && node.viewId in tikTokPostViewIds &&
                     node.bounds == TIKTOK_POST_BOUNDS && node.text.trim() == "Post"
             } == 1
+
+    fun tikTokCaptionViewId(snapshot: SocialAccessibilitySnapshot): String? =
+        snapshot.nodes.singleOrNull { it.visible && it.editable && it.viewId in tikTokCaptionViewIds }?.viewId
+
+    fun tikTokPostViewId(snapshot: SocialAccessibilitySnapshot): String? =
+        snapshot.nodes.singleOrNull { node ->
+            node.visible && node.viewId in tikTokPostViewIds &&
+                node.bounds == TIKTOK_POST_BOUNDS && node.text.trim() == "Post"
+        }?.viewId
 
     fun isVerifiedTikTokFinalComposer(
         snapshot: SocialAccessibilitySnapshot,
@@ -666,7 +777,7 @@ internal object SocialAccessibilitySnapshotPolicy {
     ): Boolean {
         if (!isTikTokFinalComposerStructure(snapshot)) return false
         val actual = snapshot.nodes.single {
-            it.visible && it.editable && it.viewId == TIKTOK_CAPTION_VIEW_ID
+            it.visible && it.editable && it.viewId in tikTokCaptionViewIds
         }.text.trim()
         val expected = expectedCaption.trim()
         val emptyPlaceholder = actual.startsWith("Add a catchy title") ||

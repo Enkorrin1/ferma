@@ -43,6 +43,23 @@
             Environment = @{}
         }
         @{
+            Name = 'queues'
+            Enabled = $true
+            Executable = 'D:\Project\Ферма\source\mobile_poster_hub\.venv\Scripts\python.exe'
+            Arguments = @('inbox_worker.py')
+            WorkingDirectory = 'D:\Project\Ферма\source\mobile_poster_hub'
+            HealthUrl = $null
+            EnvironmentFile = 'D:\Project\Ферма\source\mobile_poster_hub\.env'
+            EnvironmentFileKeys = @('HUB_ADMIN_TOKEN')
+            Environment = @{
+                HUB_DATA_DIR = 'D:\Project\Ферма\artifacts\hub-windows-runtime\data'
+                HUB_LOCAL_URL = 'http://127.0.0.1:18082'
+                HUB_PUBLIC_BASE_URL = 'http://127.0.0.1:18082'
+                FARM_INBOX_POLL_SECONDS = '2'
+                FARM_WORKER_HEARTBEAT = 'D:\Project\Ферма\artifacts\hub-windows-runtime\data\inbox-worker-heartbeat.json'
+            }
+        }
+        @{
             Name = 'tunnel'
             Enabled = $false
             Executable = 'C:\Program Files\cloudflared\cloudflared.exe'
